@@ -1,0 +1,62 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - prealloc
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+      - shadow
+  goimports:
+    local-prefixes: github.com/tommy-cxcpwz/gossm
+  misspell:
+    locale: US
+  gosec:
+    excludes:
+      - G104 # Audit errors not checked (we handle this with errcheck)
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - unparam
+    # viper.BindPFlag in init() is a common pattern
+    - linters:
+        - errcheck
+      source: "viper\\.BindPFlag"
+    # survey.AskOne error handling is optional for interactive prompts
+    - linters:
+        - errcheck
+      source: "survey\\.AskOne"
+    # G101: False positive for credential format strings
+    - linters:
+        - gosec
+      text: "G101:"
+    # G306: Executable files need 0755 permissions
+    - linters:
+        - gosec
+      text: "G306:"
+      source: "ssmPluginPath"
+  max-issues-per-linter: 50
+  max-same-issues: 10

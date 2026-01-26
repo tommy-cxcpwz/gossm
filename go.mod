@@ -1,4 +1,4 @@
-module github.com/gjbae1212/gossm
+module github.com/tommy-cxcpwz/gossm
 
 go 1.24.0
 

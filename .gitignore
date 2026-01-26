@@ -1,10 +1,39 @@
-.idea
-vendor
-test
-log
+# Binaries
 gossm
 gossm.exe
-test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test output
+*.test
 coverage.txt
-dist
-gopath
+coverage.out
+*.coverprofile
+
+# Build artifacts
+dist/
+gopath/
+vendor/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Logs
+*.log
+log/
+
+# Temporary files
+*.tmp
+*.temp

@@ -3,17 +3,17 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/fatih/color"
-	"github.com/gjbae1212/gossm/internal"
 	"github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/tommy-cxcpwz/gossm/internal"
 )
 
 const (
@@ -28,7 +28,6 @@ var (
 		Long:  `gossm is interactive CLI tool that you select server in AWS and then could connect or send files your AWS server using start-session, ssh, scp in AWS Systems Manger Session Manager.`,
 	}
 
-	_version                 string
 	_credential              *Credential
 	_credentialWithMFA       = fmt.Sprintf("%s_mfa", config.DefaultSharedCredentialsFilename())
 	_credentialWithTemporary = fmt.Sprintf("%s_temporary", config.DefaultSharedCredentialsFilename())
@@ -94,7 +93,7 @@ func initConfig() {
 	_credential.ssmPluginPath = filepath.Join(_credential.gossmHomePath, internal.GetSsmPluginName())
 	if info, err := os.Stat(_credential.ssmPluginPath); os.IsNotExist(err) {
 		color.Green("[create] aws ssm plugin")
-		if err := ioutil.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
+		if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
 			panicRed(internal.WrapError(err))
 		}
 	} else if err != nil {
@@ -102,7 +101,7 @@ func initConfig() {
 	} else {
 		if int(info.Size()) != len(plugin) {
 			color.Green("[update] aws ssm plugin")
-			if err := ioutil.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
+			if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
 				panicRed(internal.WrapError(err))
 			}
 		}
@@ -232,7 +231,7 @@ func initConfig() {
 
 		temporaryCredentialsString := fmt.Sprintf(mfaCredentialFormat, _credential.awsProfile, temporaryCredentials.AccessKeyID,
 			temporaryCredentials.SecretAccessKey, temporaryCredentials.SessionToken)
-		if err := ioutil.WriteFile(_credentialWithTemporary, []byte(temporaryCredentialsString), 0600); err != nil {
+		if err := os.WriteFile(_credentialWithTemporary, []byte(temporaryCredentialsString), 0600); err != nil {
 			panicRed(internal.WrapError(err))
 		}
 
