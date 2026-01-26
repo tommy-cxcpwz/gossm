@@ -71,8 +71,15 @@ aws_secret_access_key = AWS SECRET KEY
 ### command
 #### start
 ```bash
-$ gossm start 
+$ gossm start
 ```
+
+#### list
+List all available instances that can be connected via SSM.
+```bash
+$ gossm list
+```
+Output shows instance name, ID, private DNS, and public DNS in a table format.
 
 #### ssh, scp
 `-e` must pass args when is using scp.   

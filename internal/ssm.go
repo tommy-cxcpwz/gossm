@@ -208,10 +208,53 @@ func AskPorts() (port *Port, retErr error) {
 
 // FindInstances returns all of instances-map with running state.
 func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, error) {
+	// get instance ids which possibly can connect to instances using ssm.
+	instances, err := FindInstanceIdsWithConnectedSSM(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(instances) == 0 {
+		return make(map[string]*Target), nil
+	}
+
+	// Split instances into batches of 199 (AWS limit is 200 filter values)
+	const batchSize = 199
+	var batches [][]string
+	for i := 0; i < len(instances); i += batchSize {
+		end := i + batchSize
+		if end > len(instances) {
+			end = len(instances)
+		}
+		batches = append(batches, instances[i:end])
+	}
+
+	// Process batches in parallel
 	var (
-		client     = ec2.NewFromConfig(cfg)
-		table      = make(map[string]*Target)
-		outputFunc = func(table map[string]*Target, output *ec2.DescribeInstancesOutput) {
+		client  = ec2.NewFromConfig(cfg)
+		mu      sync.Mutex
+		table   = make(map[string]*Target)
+		wg      sync.WaitGroup
+		errChan = make(chan error, len(batches))
+	)
+
+	for _, batch := range batches {
+		wg.Add(1)
+		go func(instanceIDs []string) {
+			defer wg.Done()
+			output, err := client.DescribeInstances(ctx,
+				&ec2.DescribeInstancesInput{
+					Filters: []ec2_types.Filter{
+						{Name: aws.String("instance-state-name"), Values: []string{"running"}},
+						{Name: aws.String("instance-id"), Values: instanceIDs},
+					},
+				})
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			mu.Lock()
 			for _, rv := range output.Reservations {
 				for _, inst := range rv.Instances {
 					name := ""
@@ -228,33 +271,18 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 					}
 				}
 			}
-		}
-	)
-
-	// get instance ids which possibly can connect to instances using ssm.
-	instances, err := FindInstanceIdsWithConnectedSSM(ctx, cfg)
-	if err != nil {
-		return nil, err
+			mu.Unlock()
+		}(batch)
 	}
 
-	for len(instances) > 0 {
-		max := len(instances)
-		// The maximum number of filter values specified on a single call is 200.
-		if max >= 200 {
-			max = 199
-		}
-		output, err := client.DescribeInstances(ctx,
-			&ec2.DescribeInstancesInput{
-				Filters: []ec2_types.Filter{
-					{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-					{Name: aws.String("instance-id"), Values: instances[:max]},
-				},
-			})
+	wg.Wait()
+	close(errChan)
+
+	// Return first error if any
+	for err := range errChan {
 		if err != nil {
 			return nil, err
 		}
-		outputFunc(table, output)
-		instances = instances[max:]
 	}
 
 	return table, nil
