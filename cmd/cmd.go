@@ -33,22 +33,11 @@ var (
 				panicRed(fmt.Errorf("[err] not found exec command"))
 			}
 
-			// get targets
+			// get targets - if provided directly, skip the API lookup
 			argTarget := strings.TrimSpace(viper.GetString("cmd-target"))
 			if argTarget != "" {
-				table, err := internal.FindInstances(ctx, *_credential.awsConfig)
-				if err != nil {
-					panicRed(err)
-				}
-				for _, t := range table {
-					if t.Name == argTarget {
-						targets = append(targets, t)
-						break
-					}
-				}
-			}
-
-			if len(targets) == 0 {
+				targets = append(targets, &internal.Target{Name: argTarget})
+			} else {
 				targets, err = internal.AskMultiTarget(ctx, *_credential.awsConfig)
 				if err != nil {
 					panicRed(err)

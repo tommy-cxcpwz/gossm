@@ -25,9 +25,24 @@ func GetSsmPluginName() string {
 	}
 }
 
-// GetSsmPlugin returns filepath for aws ssm plugin.
+// GetSsmPlugin returns the aws ssm plugin binary.
 func GetSsmPlugin() ([]byte, error) {
 	return GetAsset(getSSMPluginKey())
+}
+
+// GetSsmPluginSize returns the size of the embedded ssm plugin without reading it.
+func GetSsmPluginSize() (int64, error) {
+	f, err := assets.Open("assets/" + getSSMPluginKey())
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 func getSSMPluginKey() string {
