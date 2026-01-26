@@ -57,6 +57,11 @@ func panicRed(err error) {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
+	// Enable debug mode if flag is set
+	internal.DebugMode = viper.GetBool("debug")
+	timer := internal.StartTimer("initConfig")
+	defer timer.Stop()
+
 	_credential = &Credential{}
 	// 1. get aws profile
 	awsProfile := viper.GetString("profile")
@@ -85,27 +90,41 @@ func initConfig() {
 		}
 	}
 
-	plugin, err := internal.GetSsmPlugin()
-	if err != nil {
-		panicRed(internal.WrapError(err))
-	}
-
 	_credential.ssmPluginPath = filepath.Join(_credential.gossmHomePath, internal.GetSsmPluginName())
-	if info, err := os.Stat(_credential.ssmPluginPath); os.IsNotExist(err) {
-		color.Green("[create] aws ssm plugin")
-		if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
-			panicRed(internal.WrapError(err))
-		}
+
+	// Check if plugin needs to be created/updated (compare sizes first to avoid loading large binary)
+	pluginTimer := internal.StartTimer("check SSM plugin")
+	needsUpdate := false
+	info, err := os.Stat(_credential.ssmPluginPath)
+	if os.IsNotExist(err) {
+		needsUpdate = true
 	} else if err != nil {
 		panicRed(internal.WrapError(err))
 	} else {
-		if int(info.Size()) != len(plugin) {
+		// Compare sizes without loading the full plugin
+		embeddedSize, err := internal.GetSsmPluginSize()
+		if err != nil {
+			panicRed(internal.WrapError(err))
+		}
+		needsUpdate = info.Size() != embeddedSize
+	}
+
+	if needsUpdate {
+		internal.DebugLog("plugin needs update, loading binary...")
+		plugin, err := internal.GetSsmPlugin()
+		if err != nil {
+			panicRed(internal.WrapError(err))
+		}
+		if info == nil {
+			color.Green("[create] aws ssm plugin")
+		} else {
 			color.Green("[update] aws ssm plugin")
-			if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
-				panicRed(internal.WrapError(err))
-			}
+		}
+		if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
+			panicRed(internal.WrapError(err))
 		}
 	}
+	pluginTimer.Stop()
 
 	// 4. set shared credential.
 	sharedCredFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
@@ -133,6 +152,7 @@ func initConfig() {
 
 	// if shared cred file is exist.
 	if sharedCredFile != "" {
+		credTimer := internal.StartTimer("load shared credentials")
 		awsConfig, err := internal.NewSharedConfig(context.Background(),
 			_credential.awsProfile,
 			[]string{config.DefaultSharedConfigFilename()},
@@ -150,6 +170,7 @@ func initConfig() {
 		} else {
 			_credential.awsConfig = &awsConfig
 		}
+		credTimer.Stop()
 	}
 
 	// check subcommands
@@ -175,60 +196,41 @@ func initConfig() {
 	}
 
 	if _credential.awsConfig == nil { // not use shared credential
+		credLoadTimer := internal.StartTimer("load credentials")
 		var temporaryCredentials aws.Credentials
 		var temporaryConfig aws.Config
 
-		if os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SECRET_ACCESS_KEY") != "" { // use global environments.
-			temporaryConfig, err = internal.NewConfig(context.Background(),
-				os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"),
-				os.Getenv("AWS_SESSION_TOKEN"), awsRegion, os.Getenv("AWS_ROLE_ARN"))
-			if err != nil {
-				panicRed(internal.WrapError(err))
-			}
+		// Load credentials directly from config + credentials file (skip config-only attempt)
+		internal.DebugLog("loading from config + credentials file")
+		temporaryConfig, err = internal.NewSharedConfig(context.Background(), _credential.awsProfile,
+			[]string{config.DefaultSharedConfigFilename()}, []string{config.DefaultSharedCredentialsFilename()})
+		if err != nil {
+			panicRed(internal.WrapError(err))
+		}
 
-			temporaryCredentials, err = temporaryConfig.Credentials.Retrieve(context.Background())
-			if err != nil || temporaryCredentials.Expired() ||
-				temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" ||
-				(subcmd.Use == "mfa" && temporaryCredentials.SessionToken != "") {
-				panicRed(internal.WrapError(fmt.Errorf("[err] invalid global environments %s", err.Error())))
-			}
-		} else { // use default credential file
-			// get cred by only config
-			temporaryConfig, err = internal.NewSharedConfig(context.Background(), _credential.awsProfile,
-				[]string{config.DefaultSharedConfigFilename()}, []string{})
-			if err == nil {
-				temporaryCredentials, err = temporaryConfig.Credentials.Retrieve(context.Background())
-			}
+		retrieveTimer := internal.StartTimer("retrieve credentials")
+		temporaryCredentials, err = temporaryConfig.Credentials.Retrieve(context.Background())
+		retrieveTimer.Stop()
+		if err != nil {
+			panicRed(internal.WrapError(err))
+		}
 
-			// error is raised or temporaryCredentials is invalid.
-			if err != nil || temporaryCredentials.Expired() ||
-				temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" ||
-				(subcmd.Use == "mfa" && temporaryCredentials.SessionToken != "") {
-				// get cred by default credential file.
-				temporaryConfig, err = internal.NewSharedConfig(context.Background(), _credential.awsProfile,
-					[]string{config.DefaultSharedConfigFilename()}, []string{config.DefaultSharedCredentialsFilename()})
-				if err != nil {
-					panicRed(internal.WrapError(err))
-				}
+		// For mfa command, ensure we don't use session token credentials
+		if subcmd.Use == "mfa" && temporaryCredentials.SessionToken != "" {
+			panicRed(internal.WrapError(fmt.Errorf("[err] mfa command requires non-session credentials")))
+		}
 
-				temporaryCredentials, err = temporaryConfig.Credentials.Retrieve(context.Background())
-				if err != nil {
-					panicRed(internal.WrapError(err))
-				}
-				if temporaryCredentials.Expired() || temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" {
-					panicRed(internal.WrapError(fmt.Errorf("[err] not found credentials")))
-				}
+		if temporaryCredentials.Expired() || temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" {
+			panicRed(internal.WrapError(fmt.Errorf("[err] not found valid credentials")))
+		}
 
-				// extract aws region if awsRegion is empty.
-				if awsRegion == "" {
-					awsRegion = temporaryConfig.Region
-				}
-			}
+		// extract aws region if awsRegion is empty.
+		if awsRegion == "" {
+			awsRegion = temporaryConfig.Region
 		}
 
 		// [ISSUE] KMS Encrypt, must use AWS_SHARED_CREDENTIALS_FILE with SharedConfig.
 		// [INFO] write temporaryCredentials to file.
-
 		temporaryCredentialsString := fmt.Sprintf(mfaCredentialFormat, _credential.awsProfile, temporaryCredentials.AccessKeyID,
 			temporaryCredentials.SecretAccessKey, temporaryCredentials.SessionToken)
 		if err := os.WriteFile(_credentialWithTemporary, []byte(temporaryCredentialsString), 0600); err != nil {
@@ -236,6 +238,8 @@ func initConfig() {
 		}
 
 		os.Setenv("AWS_SHARED_CREDENTIALS_FILE", _credentialWithTemporary)
+
+		finalConfigTimer := internal.StartTimer("create final AWS config")
 		awsConfig, err := internal.NewSharedConfig(context.Background(),
 			_credential.awsProfile, []string{}, []string{_credentialWithTemporary},
 		)
@@ -243,6 +247,8 @@ func initConfig() {
 			panicRed(internal.WrapError(err))
 		}
 		_credential.awsConfig = &awsConfig
+		finalConfigTimer.Stop()
+		credLoadTimer.Stop()
 	}
 
 	// set region
@@ -267,6 +273,7 @@ func init() {
 	// will be global for your application.
 	rootCmd.PersistentFlags().StringP("profile", "p", "", `[optional] if you are having multiple aws profiles, it is one of profiles (default is AWS_PROFILE environment variable or default)`)
 	rootCmd.PersistentFlags().StringP("region", "r", "", `[optional] it is region in AWS that would like to do something`)
+	rootCmd.PersistentFlags().Bool("debug", false, `[optional] enable debug mode to show timing information`)
 
 	// set version flag
 	rootCmd.InitDefaultVersionFlag()
@@ -274,4 +281,5 @@ func init() {
 	// mapping viper
 	viper.BindPFlag("profile", rootCmd.PersistentFlags().Lookup("profile"))
 	viper.BindPFlag("region", rootCmd.PersistentFlags().Lookup("region"))
+	viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 }

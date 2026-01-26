@@ -109,12 +109,26 @@ $ gossm scp -e '-i key.pem file user@server-domain:/home/blahblah'
 <img src="https://storage.googleapis.com/gjbae1212-asset/gossm/ssh.gif" width="500", height="450" />
 </p>
 
-#### cmd 
+#### cmd
 `-e` required args, it is a parameter for execute to command on selected servers.
 
 ```bash
 # It is to execute a command("uptime") on selected multiple servers, waiting for a response on its result.
-$ gossm cmd -e "uptime" 
+$ gossm cmd -e "uptime"
+```
+
+#### exec
+Execute a command directly on a specific instance by providing the instance ID.
+
+```bash
+# Execute ls -la on a specific instance
+$ gossm exec i-0abc123def456789 ls -la
+
+# Execute a command with quotes
+$ gossm exec i-0abc123def456789 "cat /etc/hosts"
+
+# Check disk usage
+$ gossm exec i-0abc123def456789 df -h
 ```
 
 #### fwd

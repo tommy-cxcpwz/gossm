@@ -26,21 +26,12 @@ var (
 			)
 			ctx := context.Background()
 
-			// get target
+			// get target - if provided directly, skip the API lookup
 			argTarget := strings.TrimSpace(viper.GetString("start-session-target"))
 			if argTarget != "" {
-				table, err := internal.FindInstances(ctx, *_credential.awsConfig)
-				if err != nil {
-					panicRed(err)
-				}
-				for _, t := range table {
-					if t.Name == argTarget {
-						target = t
-						break
-					}
-				}
-			}
-			if target == nil {
+				// Use target directly without validation for faster startup
+				target = &internal.Target{Name: argTarget}
+			} else {
 				target, err = internal.AskTarget(ctx, *_credential.awsConfig)
 				if err != nil {
 					panicRed(err)

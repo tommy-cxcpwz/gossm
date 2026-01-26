@@ -46,6 +46,7 @@ type (
 		Name          string
 		PublicDomain  string
 		PrivateDomain string
+		displayKey    string // internal use for display formatting
 	}
 
 	User struct {
@@ -208,53 +209,45 @@ func AskPorts() (port *Port, retErr error) {
 
 // FindInstances returns all of instances-map with running state.
 func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, error) {
-	// get instance ids which possibly can connect to instances using ssm.
-	instances, err := FindInstanceIdsWithConnectedSSM(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
+	timer := StartTimer("FindInstances")
+	defer timer.Stop()
 
-	if len(instances) == 0 {
-		return make(map[string]*Target), nil
-	}
-
-	// Split instances into batches of 199 (AWS limit is 200 filter values)
-	const batchSize = 199
-	var batches [][]string
-	for i := 0; i < len(instances); i += batchSize {
-		end := i + batchSize
-		if end > len(instances) {
-			end = len(instances)
-		}
-		batches = append(batches, instances[i:end])
-	}
-
-	// Process batches in parallel
+	// Run SSM and EC2 calls in parallel
 	var (
-		client  = ec2.NewFromConfig(cfg)
-		mu      sync.Mutex
-		table   = make(map[string]*Target)
-		wg      sync.WaitGroup
-		errChan = make(chan error, len(batches))
+		ssmInstances []string
+		ec2Instances = make(map[string]*Target)
+		ssmErr       error
+		ec2Err       error
+		wg           sync.WaitGroup
 	)
 
-	for _, batch := range batches {
-		wg.Add(1)
-		go func(instanceIDs []string) {
-			defer wg.Done()
-			output, err := client.DescribeInstances(ctx,
-				&ec2.DescribeInstancesInput{
-					Filters: []ec2_types.Filter{
-						{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-						{Name: aws.String("instance-id"), Values: instanceIDs},
-					},
-				})
+	// Get SSM-connected instance IDs
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ssmInstances, ssmErr = FindInstanceIdsWithConnectedSSM(ctx, cfg)
+	}()
+
+	// Get all running EC2 instances
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ec2Timer := StartTimer("EC2 DescribeInstances")
+		defer ec2Timer.Stop()
+
+		client := ec2.NewFromConfig(cfg)
+		paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{
+			Filters: []ec2_types.Filter{
+				{Name: aws.String("instance-state-name"), Values: []string{"running"}},
+			},
+		})
+
+		for paginator.HasMorePages() {
+			output, err := paginator.NextPage(ctx)
 			if err != nil {
-				errChan <- err
+				ec2Err = err
 				return
 			}
-
-			mu.Lock()
 			for _, rv := range output.Reservations {
 				for _, inst := range rv.Instances {
 					name := ""
@@ -264,24 +257,38 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 							break
 						}
 					}
-					table[fmt.Sprintf("%s\t(%s)", name, *inst.InstanceId)] = &Target{
-						Name:          aws.ToString(inst.InstanceId),
+					instanceID := aws.ToString(inst.InstanceId)
+					ec2Instances[instanceID] = &Target{
+						Name:          instanceID,
 						PublicDomain:  aws.ToString(inst.PublicDnsName),
 						PrivateDomain: aws.ToString(inst.PrivateDnsName),
 					}
+					// Store display key for later
+					ec2Instances[instanceID].displayKey = fmt.Sprintf("%s\t(%s)", name, instanceID)
 				}
 			}
-			mu.Unlock()
-		}(batch)
-	}
+		}
+	}()
 
 	wg.Wait()
-	close(errChan)
 
-	// Return first error if any
-	for err := range errChan {
-		if err != nil {
-			return nil, err
+	if ssmErr != nil {
+		return nil, ssmErr
+	}
+	if ec2Err != nil {
+		return nil, ec2Err
+	}
+
+	// Filter EC2 instances to only those with SSM connected
+	ssmSet := make(map[string]struct{}, len(ssmInstances))
+	for _, id := range ssmInstances {
+		ssmSet[id] = struct{}{}
+	}
+
+	table := make(map[string]*Target)
+	for instanceID, target := range ec2Instances {
+		if _, ok := ssmSet[instanceID]; ok {
+			table[target.displayKey] = target
 		}
 	}
 
@@ -290,6 +297,9 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 
 // FindInstanceIdsWithConnectedSSM asks you which selects instances.
 func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]string, error) {
+	timer := StartTimer("SSM DescribeInstanceInformation")
+	defer timer.Stop()
+
 	var (
 		instances  []string
 		client     = ssm.NewFromConfig(cfg)
@@ -472,8 +482,10 @@ func AskHost() (host string, retErr error) {
 
 // CreateStartSession creates start session.
 func CreateStartSession(ctx context.Context, cfg aws.Config, input *ssm.StartSessionInput) (*ssm.StartSessionOutput, error) {
-	client := ssm.NewFromConfig(cfg)
+	timer := StartTimer("SSM StartSession API")
+	defer timer.Stop()
 
+	client := ssm.NewFromConfig(cfg)
 	return client.StartSession(ctx, input)
 }
 
@@ -489,6 +501,9 @@ func DeleteStartSession(ctx context.Context, cfg aws.Config, input *ssm.Terminat
 
 // SendCommand send commands to instance targets.
 func SendCommand(ctx context.Context, cfg aws.Config, targets []*Target, command string) (*ssm.SendCommandOutput, error) {
+	timer := StartTimer("SSM SendCommand API")
+	defer timer.Stop()
+
 	client := ssm.NewFromConfig(cfg)
 
 	// only support to linux (window = "AWS-RunPowerShellScript")
@@ -525,7 +540,7 @@ func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.G
 				time.Sleep(1 * time.Second)
 				output, err := client.GetCommandInvocation(ctx, input)
 				if err != nil {
-					color.Red("%v", err)
+					color.Red("[err] %v", err)
 					return
 				}
 				status := strings.ToLower(string(output.Status))
@@ -533,10 +548,28 @@ func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.G
 				case "pending", "inprogress", "delayed":
 					continue
 				case "success":
-					fmt.Printf("[%s][%s] %s\n", color.GreenString("success"), color.YellowString(*output.InstanceId), color.GreenString(*output.StandardOutputContent))
+					stdout := aws.ToString(output.StandardOutputContent)
+					if stdout == "" {
+						stdout = "(no output)"
+					}
+					fmt.Printf("[%s][%s]\n%s\n", color.GreenString("success"), color.YellowString(aws.ToString(output.InstanceId)), stdout)
 					return
 				default:
-					fmt.Printf("[%s][%s] %s\n", color.RedString("err"), color.YellowString(*output.InstanceId), color.RedString(*output.StandardErrorContent))
+					// Show both stdout and stderr for failed commands
+					stdout := aws.ToString(output.StandardOutputContent)
+					stderr := aws.ToString(output.StandardErrorContent)
+					statusDetail := aws.ToString(output.StatusDetails)
+
+					fmt.Printf("[%s][%s] status: %s\n", color.RedString("failed"), color.YellowString(aws.ToString(output.InstanceId)), color.RedString(statusDetail))
+					if stdout != "" {
+						fmt.Printf("stdout: %s\n", stdout)
+					}
+					if stderr != "" {
+						fmt.Printf("stderr: %s\n", color.RedString(stderr))
+					}
+					if stdout == "" && stderr == "" {
+						fmt.Printf("(no output)\n")
+					}
 					return
 				}
 			}

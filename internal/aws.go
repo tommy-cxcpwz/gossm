@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
@@ -56,6 +57,8 @@ func NewSharedConfig(ctx context.Context, profile string, sharedConfigFiles, sha
 		config.WithSharedConfigProfile(profile),
 		config.WithSharedConfigFiles(sharedConfigFiles),
 		config.WithSharedCredentialsFiles(sharedCredentialsFiles),
+		// Disable EC2 IMDS to avoid 1-2 second timeout when not on EC2
+		config.WithEC2IMDSClientEnableState(imds.ClientDisabled),
 	)
 	if err != nil {
 		return aws.Config{}, WrapError(err)
