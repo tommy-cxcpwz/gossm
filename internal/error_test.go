@@ -19,10 +19,7 @@ func TestWrapError(t *testing.T) {
 
 	for _, t := range tests {
 		err := WrapError(t.err)
-		switch t.err.(type) {
-		case error:
-			assert.True(errors.Is(err, t.err.(error)))
-		}
+		assert.True(errors.Is(err, t.err))
 		fmt.Println(err)
 	}
 }

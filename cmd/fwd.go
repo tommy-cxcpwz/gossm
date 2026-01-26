@@ -9,9 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/fatih/color"
-	"github.com/gjbae1212/gossm/internal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/tommy-cxcpwz/gossm/internal"
 )
 
 var (
@@ -72,8 +73,8 @@ var (
 			input := &ssm.StartSessionInput{
 				DocumentName: &docName,
 				Parameters: map[string][]string{
-					"portNumber":      []string{remotePort},
-					"localPortNumber": []string{localPort},
+					"portNumber":      {remotePort},
+					"localPortNumber": {localPort},
 				},
 				Target: aws.String(target.Name),
 			}

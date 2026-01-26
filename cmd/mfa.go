@@ -3,7 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 	"time"
 
@@ -68,7 +68,7 @@ So you can conveniently use aws-cli.
 
 			newCredential := fmt.Sprintf(mfaCredentialFormat, _defaultProfile, *output.Credentials.AccessKeyId,
 				*output.Credentials.SecretAccessKey, *output.Credentials.SessionToken)
-			if err := ioutil.WriteFile(_credentialWithMFA, []byte(newCredential), 0600); err != nil {
+			if err := os.WriteFile(_credentialWithMFA, []byte(newCredential), 0600); err != nil {
 				panicRed(err)
 			}
 

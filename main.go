@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/gjbae1212/gossm/cmd"
+	"github.com/tommy-cxcpwz/gossm/cmd"
 )
 
 var gossmVersion string

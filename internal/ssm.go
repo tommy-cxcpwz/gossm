@@ -117,7 +117,7 @@ func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
 	}
 
 	options := make([]string, 0, len(table))
-	for k, _ := range table {
+	for k := range table {
 		options = append(options, k)
 	}
 	sort.Strings(options)
@@ -148,7 +148,7 @@ func AskMultiTarget(ctx context.Context, cfg aws.Config) ([]*Target, error) {
 	}
 
 	options := make([]string, 0, len(table))
-	for k, _ := range table {
+	for k := range table {
 		options = append(options, k)
 	}
 	sort.Strings(options)
@@ -166,7 +166,7 @@ func AskMultiTarget(ctx context.Context, cfg aws.Config) ([]*Target, error) {
 		return nil, err
 	}
 
-	var targets []*Target
+	targets := make([]*Target, 0, len(selectKeys))
 	for _, k := range selectKeys {
 		targets = append(targets, table[k])
 	}
@@ -466,7 +466,7 @@ func SendCommand(ctx context.Context, cfg aws.Config, targets []*Target, command
 	// only support to linux (window = "AWS-RunPowerShellScript")
 	docName := "AWS-RunShellScript"
 
-	var ids []string
+	ids := make([]string, 0, len(targets))
 	for _, t := range targets {
 		ids = append(ids, t.Name)
 	}
@@ -492,28 +492,26 @@ func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.G
 	for _, input := range inputs {
 		wg.Add(1)
 		go func(input *ssm.GetCommandInvocationInput) {
-		Exit:
+			defer wg.Done()
 			for {
-				select {
-				case <-time.After(1 * time.Second):
-					output, err := client.GetCommandInvocation(ctx, input)
-					if err != nil {
-						color.Red("%v", err)
-						break Exit
-					}
-					status := strings.ToLower(string(output.Status))
-					switch status {
-					case "pending", "inprogress", "delayed":
-					case "success":
-						fmt.Printf("[%s][%s] %s\n", color.GreenString("success"), color.YellowString(*output.InstanceId), color.GreenString(*output.StandardOutputContent))
-						break Exit
-					default:
-						fmt.Printf("[%s][%s] %s\n", color.RedString("err"), color.YellowString(*output.InstanceId), color.RedString(*output.StandardErrorContent))
-						break Exit
-					}
+				time.Sleep(1 * time.Second)
+				output, err := client.GetCommandInvocation(ctx, input)
+				if err != nil {
+					color.Red("%v", err)
+					return
+				}
+				status := strings.ToLower(string(output.Status))
+				switch status {
+				case "pending", "inprogress", "delayed":
+					continue
+				case "success":
+					fmt.Printf("[%s][%s] %s\n", color.GreenString("success"), color.YellowString(*output.InstanceId), color.GreenString(*output.StandardOutputContent))
+					return
+				default:
+					fmt.Printf("[%s][%s] %s\n", color.RedString("err"), color.YellowString(*output.InstanceId), color.RedString(*output.StandardErrorContent))
+					return
 				}
 			}
-			wg.Done()
 		}(input)
 	}
 
