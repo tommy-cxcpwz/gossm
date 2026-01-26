@@ -117,7 +117,22 @@ $ gossm cmd -e "uptime"
 ```bash
 $ gossm fwd -z 8080 -l 42069
 ```
-If not specified, you will be prompted to enter a remote and local port after selecting a target. 
+If not specified, you will be prompted to enter a remote and local port after selecting a target.
+
+#### fwdrem
+Port forwarding to a remote host through an EC2 instance (bastion/jump host).
+`-z` Optionally specify the remote port to forward to
+`-l` Optionally specify the local port to use
+`-t` Optionally specify the EC2 instance ID to proxy through
+`-a` Optionally specify the remote host address to proxy to
+
+```bash
+# Forward local port 5432 to a remote RDS instance through an EC2 bastion
+$ gossm fwdrem -z 5432 -l 5432 -a my-rds-instance.abc123.us-east-1.rds.amazonaws.com
+
+# Interactive mode - will prompt for target, ports, and host
+$ gossm fwdrem
+```
 
 #### mfa
 `-deadline` it's to set expire time for temporary credentials. **default** is 6 hours.  
