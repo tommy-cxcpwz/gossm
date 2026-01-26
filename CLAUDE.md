@@ -37,7 +37,7 @@ golangci-lint run --fix ./...
 ### Package Structure
 
 - `main.go` - Entry point, passes version to cmd.Execute()
-- `cmd/` - Cobra CLI commands (root, start, ssh, scp, cmd, fwd, fwdrem, mfa)
+- `cmd/` - Cobra CLI commands (root, start, ssh, scp, cmd, exec, list, fwd, fwdrem, mfa)
 - `internal/` - Core business logic for AWS interactions and utilities
 
 ### Key Components
@@ -48,10 +48,17 @@ golangci-lint run --fix ./...
 - Auto-extracts and manages the embedded SSM session-manager-plugin to `~/.gossm/`
 
 **internal/ssm.go** - AWS SSM and EC2 operations:
-- `FindInstances()` - Discovers EC2 instances that have SSM agent connected
+- `FindInstances()` - Discovers EC2 instances with SSM agent connected (runs SSM and EC2 API calls in parallel for performance)
+- `FindInstanceIdsWithConnectedSSM()` - Gets instance IDs with active SSM connections
 - `AskTarget()/AskMultiTarget()` - Interactive instance selection via survey library
 - `CreateStartSession()/DeleteStartSession()` - SSM session lifecycle
+- `SendCommand()` - Sends commands to instances via SSM Run Command
 - `CallProcess()` - Executes the SSM plugin as a subprocess
+
+**internal/debug.go** - Debug and timing utilities:
+- `DebugMode` - Global flag to enable debug output
+- `DebugLog()` - Prints debug messages when enabled
+- `StartTimer()/Stop()` - Measures and reports operation timing
 
 **internal/assets.go** - Embeds platform-specific session-manager-plugin binaries using `//go:embed assets/*`
 
