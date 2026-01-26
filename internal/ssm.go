@@ -273,7 +273,7 @@ func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]str
 		}
 	)
 
-	output, err := client.DescribeInstanceInformation(ctx, &ssm.DescribeInstanceInformationInput{MaxResults: maxOutputResults})
+	output, err := client.DescribeInstanceInformation(ctx, &ssm.DescribeInstanceInformationInput{MaxResults: aws.Int32(maxOutputResults)})
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +288,7 @@ func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]str
 			}
 			nextOutput, err := client.DescribeInstanceInformation(ctx, &ssm.DescribeInstanceInformationInput{
 				NextToken:  aws.String(token),
-				MaxResults: maxOutputResults})
+				MaxResults: aws.Int32(maxOutputResults)})
 			if err != nil {
 				return nil, err
 			}
@@ -474,11 +474,11 @@ func SendCommand(ctx context.Context, cfg aws.Config, targets []*Target, command
 	input := &ssm.SendCommandInput{
 		DocumentName:   &docName,
 		InstanceIds:    ids,
-		TimeoutSeconds: 60,
+		TimeoutSeconds: aws.Int32(60),
 		CloudWatchOutputConfig: &ssm_types.CloudWatchOutputConfig{
 			CloudWatchOutputEnabled: true,
 		},
-		Parameters: map[string][]string{"commands": []string{command}},
+		Parameters: map[string][]string{"commands": {command}},
 	}
 
 	return client.SendCommand(ctx, input)
