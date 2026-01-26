@@ -57,6 +57,7 @@ $ brew upgrade gossm
 | -c             | (optional) aws credentials file | $HOME/.aws/credentials |
 | -p             | (optional) if you are having multiple aws profiles in credentials, it is name one of profiles | default |
 | -r             | (optional) region in AWS that would like to connect |  |
+| --debug        | (optional) enable debug mode to show timing information |  |
 
 If your machine don't exist $HOME/.aws/.credentials, have to pass `-c` args.  
 ```
