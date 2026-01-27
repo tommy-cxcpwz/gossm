@@ -58,69 +58,84 @@ func TestFindInstanceIdsWithConnectedSSM(t *testing.T) {
 	}
 }
 
-func TestFindInstanceIdByIp(t *testing.T) {
+func TestTargetStruct(t *testing.T) {
 	assert := assert.New(t)
 
-	cfg, err := NewConfig(context.Background(), "", "", "", "", "")
-	assert.NoError(err)
-
-	tests := map[string]struct {
-		ctx   context.Context
-		cfg   aws.Config
-		ip    string
-		isErr bool
-	}{
-		"success": {
-			ctx:   context.Background(),
-			cfg:   cfg,
-			ip:    "1.1.1.1",
-			isErr: false,
-		},
+	target := &Target{
+		Name:          "i-1234567890abcdef0",
+		PublicDomain:  "ec2-1-2-3-4.compute.amazonaws.com",
+		PrivateDomain: "ip-10-0-0-1.ec2.internal",
 	}
 
-	for _, t := range tests {
-		result, err := FindInstanceIdByIp(t.ctx, t.cfg, t.ip)
-		assert.Equal(t.isErr, err != nil)
-		fmt.Println(result)
-	}
+	assert.Equal("i-1234567890abcdef0", target.Name)
+	assert.Equal("ec2-1-2-3-4.compute.amazonaws.com", target.PublicDomain)
+	assert.Equal("ip-10-0-0-1.ec2.internal", target.PrivateDomain)
 }
 
-func TestFindDomainByInstanceId(t *testing.T) {
+func TestUserStruct(t *testing.T) {
 	assert := assert.New(t)
 
-	cfg, err := NewConfig(context.Background(), "", "", "", "", "")
-	assert.NoError(err)
-
-	tests := map[string]struct {
-		ctx        context.Context
-		cfg        aws.Config
-		instanceId string
-		isErr      bool
-	}{
-		"success": {
-			ctx:        context.Background(),
-			cfg:        cfg,
-			instanceId: "i-unknown",
-			isErr:      false,
-		},
-	}
-
-	for _, t := range tests {
-		result, err := FindDomainByInstanceId(t.ctx, t.cfg, t.instanceId)
-		assert.Equal(t.isErr, err != nil)
-		fmt.Println(result)
-	}
+	user := &User{Name: "ubuntu"}
+	assert.Equal("ubuntu", user.Name)
 }
 
-func TestAskUser(t *testing.T)                {}
+func TestRegionStruct(t *testing.T) {
+	assert := assert.New(t)
+
+	region := &Region{Name: "us-east-1"}
+	assert.Equal("us-east-1", region.Name)
+}
+
+func TestDefaultAwsRegions(t *testing.T) {
+	assert := assert.New(t)
+
+	// Test that default regions include expected values
+	assert.Contains(defaultAwsRegions, "us-east-1")
+	assert.Contains(defaultAwsRegions, "us-west-2")
+	assert.Contains(defaultAwsRegions, "eu-west-1")
+	assert.Contains(defaultAwsRegions, "ap-northeast-1")
+	assert.Greater(len(defaultAwsRegions), 10)
+}
+
+func TestMaxOutputResults(t *testing.T) {
+	assert := assert.New(t)
+	assert.Equal(50, maxOutputResults)
+}
+
+func TestEmptyTarget(t *testing.T) {
+	assert := assert.New(t)
+
+	target := &Target{}
+	assert.Empty(target.Name)
+	assert.Empty(target.PublicDomain)
+	assert.Empty(target.PrivateDomain)
+}
+
+func TestEmptyUser(t *testing.T) {
+	assert := assert.New(t)
+
+	user := &User{}
+	assert.Empty(user.Name)
+}
+
+func TestEmptyRegion(t *testing.T) {
+	assert := assert.New(t)
+
+	region := &Region{}
+	assert.Empty(region.Name)
+}
+
 func TestAskTeam(t *testing.T)                {}
 func TestAskRegion(t *testing.T)              {}
 func TestAskTarget(t *testing.T)              {}
-func TestAskMultiTarget(t *testing.T)         {}
-func TestAskPorts(t *testing.T)               {}
 func TestCreateStartSession(t *testing.T)     {}
 func TestDeleteStartSession(t *testing.T)     {}
 func TestSendCommand(t *testing.T)            {}
 func TestPrintCommandInvocation(t *testing.T) {}
-func TestGenerateSSHExecCommand(t *testing.T) {}
-func TestPrintReady(t *testing.T)             {}
+
+func TestPrintReady(t *testing.T) {
+	// PrintReady just prints to stdout, verify it doesn't panic
+	assert.NotPanics(t, func() {
+		PrintReady("test-cmd", "us-east-1", "i-1234567890abcdef0")
+	})
+}

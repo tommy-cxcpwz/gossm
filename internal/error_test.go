@@ -23,3 +23,22 @@ func TestWrapError(t *testing.T) {
 		fmt.Println(err)
 	}
 }
+
+func TestWrapErrorNil(t *testing.T) {
+	assert := assert.New(t)
+
+	// Test with nil error
+	result := WrapError(nil)
+	assert.Nil(result)
+}
+
+func TestErrorVariables(t *testing.T) {
+	assert := assert.New(t)
+
+	// Test error variables exist and have expected content
+	assert.NotNil(ErrInvalidParams)
+	assert.Contains(ErrInvalidParams.Error(), "invalid params")
+
+	assert.NotNil(ErrUnknown)
+	assert.Contains(ErrUnknown.Error(), "unknown")
+}
