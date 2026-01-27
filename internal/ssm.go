@@ -2,13 +2,11 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,20 +60,6 @@ type (
 		Local  string
 	}
 )
-
-// AskUser asks you which selects a user.
-func AskUser() (*User, error) {
-	prompt := &survey.Input{
-		Message: "Type your connect ssh user (default: root):",
-	}
-	var user string
-	survey.AskOne(prompt, &user)
-	user = strings.TrimSpace(user)
-	if user == "" {
-		user = "root"
-	}
-	return &User{Name: user}, nil
-}
 
 // AskRegion asks you which selects a region.
 func AskRegion(ctx context.Context, cfg aws.Config) (*Region, error) {
@@ -141,94 +125,45 @@ func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
 	return table[selectKey], nil
 }
 
-// AskMultiTarget asks you which selects multi targets.
-func AskMultiTarget(ctx context.Context, cfg aws.Config) ([]*Target, error) {
-	table, err := FindInstances(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	options := make([]string, 0, len(table))
-	for k := range table {
-		options = append(options, k)
-	}
-	sort.Strings(options)
-	if len(options) == 0 {
-		return nil, fmt.Errorf("not found multi-target")
-	}
-
-	prompt := &survey.MultiSelect{
-		Message: "Choose targets in AWS:",
-		Options: options,
-	}
-
-	var selectKeys []string
-	if err := survey.AskOne(prompt, &selectKeys, survey.WithPageSize(20)); err != nil {
-		return nil, err
-	}
-
-	targets := make([]*Target, 0, len(selectKeys))
-	for _, k := range selectKeys {
-		targets = append(targets, table[k])
-	}
-	return targets, nil
-}
-
-// AskPorts asks you which select ports.
-func AskPorts() (port *Port, retErr error) {
-	port = &Port{}
-	prompts := []*survey.Question{
-		{
-			Name:   "remote",
-			Prompt: &survey.Input{Message: "Remote port to access:"},
-		},
-		{
-			Name:   "local",
-			Prompt: &survey.Input{Message: "Local port number to forward:"},
-		},
-	}
-	if err := survey.Ask(prompts, port); err != nil {
-		retErr = WrapError(err)
-		return
-	}
-	if _, err := strconv.Atoi(strings.TrimSpace(port.Remote)); err != nil {
-		retErr = errors.New("you must specify a valid port number")
-		return
-	}
-	if port.Local == "" {
-		port.Local = port.Remote
-	}
-
-	if len(port.Remote) > 5 || len(port.Local) > 5 {
-		retErr = errors.New("you must specify a valid port number")
-		return
-	}
-
-	return
-}
-
 // FindInstances returns all of instances-map with running state.
 func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, error) {
 	timer := StartTimer("FindInstances")
 	defer timer.Stop()
 
-	// Run SSM and EC2 calls in parallel
 	var (
-		ssmInstances []string
-		ec2Instances = make(map[string]*Target)
-		ssmErr       error
-		ec2Err       error
-		wg           sync.WaitGroup
+		ssmInstanceIDs []string
+		ec2Instances   = make(map[string]*Target)
+		ssmErr, ec2Err error
+		wg             sync.WaitGroup
 	)
 
-	// Get SSM-connected instance IDs
+	// Fetch SSM-connected instances in parallel
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ssmInstances, ssmErr = FindInstanceIdsWithConnectedSSM(ctx, cfg)
+		ssmTimer := StartTimer("SSM DescribeInstanceInformation")
+		defer ssmTimer.Stop()
+
+		client := ssm.NewFromConfig(cfg)
+		input := &ssm.DescribeInstanceInformationInput{MaxResults: aws.Int32(maxOutputResults)}
+
+		for {
+			output, err := client.DescribeInstanceInformation(ctx, input)
+			if err != nil {
+				ssmErr = err
+				return
+			}
+			for _, inst := range output.InstanceInformationList {
+				ssmInstanceIDs = append(ssmInstanceIDs, aws.ToString(inst.InstanceId))
+			}
+			if output.NextToken == nil {
+				break
+			}
+			input.NextToken = output.NextToken
+		}
 	}()
 
-	// Get all running EC2 instances
+	// Fetch EC2 instances in parallel
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -250,21 +185,14 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 			}
 			for _, rv := range output.Reservations {
 				for _, inst := range rv.Instances {
-					name := ""
-					for _, tag := range inst.Tags {
-						if aws.ToString(tag.Key) == "Name" {
-							name = aws.ToString(tag.Value)
-							break
-						}
-					}
 					instanceID := aws.ToString(inst.InstanceId)
+					name := getInstanceName(inst.Tags)
 					ec2Instances[instanceID] = &Target{
 						Name:          instanceID,
 						PublicDomain:  aws.ToString(inst.PublicDnsName),
 						PrivateDomain: aws.ToString(inst.PrivateDnsName),
+						displayKey:    fmt.Sprintf("%s\t(%s)", name, instanceID),
 					}
-					// Store display key for later
-					ec2Instances[instanceID].displayKey = fmt.Sprintf("%s\t(%s)", name, instanceID)
 				}
 			}
 		}
@@ -279,20 +207,30 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 		return nil, ec2Err
 	}
 
-	// Filter EC2 instances to only those with SSM connected
-	ssmSet := make(map[string]struct{}, len(ssmInstances))
-	for _, id := range ssmInstances {
+	// Build result: only instances with SSM connected
+	ssmSet := make(map[string]struct{}, len(ssmInstanceIDs))
+	for _, id := range ssmInstanceIDs {
 		ssmSet[id] = struct{}{}
 	}
 
-	table := make(map[string]*Target)
+	result := make(map[string]*Target)
 	for instanceID, target := range ec2Instances {
-		if _, ok := ssmSet[instanceID]; ok {
-			table[target.displayKey] = target
+		if _, connected := ssmSet[instanceID]; connected {
+			result[target.displayKey] = target
 		}
 	}
 
-	return table, nil
+	return result, nil
+}
+
+// getInstanceName extracts the Name tag value from EC2 instance tags.
+func getInstanceName(tags []ec2_types.Tag) string {
+	for _, tag := range tags {
+		if aws.ToString(tag.Key) == "Name" {
+			return aws.ToString(tag.Value)
+		}
+	}
+	return ""
 }
 
 // FindInstanceIdsWithConnectedSSM asks you which selects instances.
@@ -337,147 +275,6 @@ func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]str
 	}
 
 	return instances, nil
-}
-
-// FindInstanceIdByIp returns instance ids by ip.
-func FindInstanceIdByIp(ctx context.Context, cfg aws.Config, ip string) (string, error) {
-	var (
-		instanceId string
-		client     = ec2.NewFromConfig(cfg)
-		outputFunc = func(output *ec2.DescribeInstancesOutput) string {
-			for _, rv := range output.Reservations {
-				for _, inst := range rv.Instances {
-					if inst.PublicIpAddress == nil && inst.PrivateIpAddress == nil {
-						continue
-					}
-					if ip == aws.ToString(inst.PublicIpAddress) || ip == aws.ToString(inst.PrivateIpAddress) {
-						return *inst.InstanceId
-					}
-				}
-			}
-			return ""
-		}
-	)
-
-	output, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		MaxResults: aws.Int32(maxOutputResults),
-		Filters: []ec2_types.Filter{
-			{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-
-	instanceId = outputFunc(output)
-	if instanceId != "" {
-		return instanceId, nil
-	}
-
-	// Repeat it when if instanceId isn't found and output.NextToken exists.
-	if aws.ToString(output.NextToken) != "" {
-		token := aws.ToString(output.NextToken)
-		for {
-			if token == "" {
-				break
-			}
-			nextOutput, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-				MaxResults: aws.Int32(maxOutputResults),
-				NextToken:  aws.String(token),
-				Filters: []ec2_types.Filter{
-					{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-				},
-			})
-			if err != nil {
-				return "", err
-			}
-
-			instanceId = outputFunc(nextOutput)
-			if instanceId != "" {
-				return instanceId, nil
-			}
-
-			token = aws.ToString(nextOutput.NextToken)
-		}
-	}
-
-	return "", nil
-}
-
-// FindDomainByInstanceId returns domain by instance id.
-func FindDomainByInstanceId(ctx context.Context, cfg aws.Config, instanceId string) ([]string, error) {
-	var (
-		domain     []string
-		client     = ec2.NewFromConfig(cfg)
-		outputFunc = func(output *ec2.DescribeInstancesOutput, id string) []string {
-			for _, rv := range output.Reservations {
-				for _, inst := range rv.Instances {
-					if aws.ToString(inst.InstanceId) == id {
-						return []string{aws.ToString(inst.PublicDnsName), aws.ToString(inst.PrivateDnsName)}
-					}
-				}
-			}
-			return []string{}
-		}
-	)
-
-	output, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-		MaxResults: aws.Int32(maxOutputResults),
-		Filters: []ec2_types.Filter{
-			{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-		},
-	})
-	if err != nil {
-		return []string{}, err
-	}
-
-	domain = outputFunc(output, instanceId)
-	if len(domain) != 0 {
-		return domain, nil
-	}
-
-	// Repeat it when if domain isn't found and output.NextToken exists.
-	if aws.ToString(output.NextToken) != "" {
-		token := aws.ToString(output.NextToken)
-		for {
-			if token == "" {
-				break
-			}
-			nextOutput, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-				MaxResults: aws.Int32(maxOutputResults),
-				NextToken:  aws.String(token),
-				Filters: []ec2_types.Filter{
-					{Name: aws.String("instance-state-name"), Values: []string{"running"}},
-				},
-			})
-			if err != nil {
-				return []string{}, err
-			}
-
-			domain = outputFunc(nextOutput, instanceId)
-			if len(domain) != 0 {
-				return domain, nil
-			}
-
-			token = aws.ToString(nextOutput.NextToken)
-		}
-	}
-
-	return []string{}, nil
-}
-
-// AskUser asks you which selects a user.
-func AskHost() (host string, retErr error) {
-	prompt := &survey.Input{
-		Message: "Type your host address you want to forward to:",
-	}
-	survey.AskOne(prompt, &host)
-	host = strings.TrimSpace(host)
-	if host == "" {
-		retErr = errors.New("you must specify a host address")
-		return
-	}
-	return
 }
 
 // CreateStartSession creates start session.
@@ -537,6 +334,14 @@ func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.G
 		go func(input *ssm.GetCommandInvocationInput) {
 			defer wg.Done()
 			for {
+				// Check for context cancellation to prevent goroutine leak
+				select {
+				case <-ctx.Done():
+					color.Yellow("[canceled] %s", aws.ToString(input.InstanceId))
+					return
+				default:
+				}
+
 				time.Sleep(1 * time.Second)
 				output, err := client.GetCommandInvocation(ctx, input)
 				if err != nil {
@@ -579,30 +384,6 @@ func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.G
 	wg.Wait()
 }
 
-// GenerateSSHExecCommand generates ssh exec command.
-func GenerateSSHExecCommand(exec, identity, user, domain string) (newExec string) {
-	if exec == "" {
-		newExec = fmt.Sprintf("%s@%s", user, domain)
-	} else {
-		newExec = exec
-	}
-
-	opt := false
-	for _, sep := range strings.Split(newExec, " ") {
-		if sep == "-i" {
-			opt = true
-			break
-		}
-	}
-	// if current ssh-exec don't exist -i option
-	if !opt && identity != "" {
-		// injection -i option
-		newExec = fmt.Sprintf("-i %s %s", identity, newExec)
-	}
-
-	return
-}
-
 func PrintReady(cmd, region, target string) {
 	fmt.Printf("[%s] region: %s, target: %s\n", color.GreenString(cmd), color.YellowString(region), color.YellowString(target))
 }
@@ -617,13 +398,14 @@ func CallProcess(process string, args ...string) error {
 	// ignore signal(sigint)
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT)
+	defer signal.Stop(sigs) // Properly unregister signal handler
 	done := make(chan bool, 1)
 	go func() {
 		for {
 			select {
 			case <-sigs:
 			case <-done:
-				break
+				return // Use return instead of break to exit goroutine
 			}
 		}
 	}()

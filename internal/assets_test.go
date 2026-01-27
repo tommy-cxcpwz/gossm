@@ -56,3 +56,19 @@ func TestGetSsmPlugin(t *testing.T) {
 		assert.Equal(t.isErr, err != nil)
 	}
 }
+
+func TestGetSsmPluginSize(t *testing.T) {
+	assert := assert.New(t)
+
+	size, err := GetSsmPluginSize()
+	assert.NoError(err)
+	assert.Greater(size, int64(0))
+}
+
+func TestGetSSMPluginKey(t *testing.T) {
+	assert := assert.New(t)
+
+	key := getSSMPluginKey()
+	assert.Contains(key, "plugin/")
+	assert.Contains(key, "session-manager-plugin")
+}

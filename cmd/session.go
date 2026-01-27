@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -29,7 +30,10 @@ var (
 			// get target - if provided directly, skip the API lookup
 			argTarget := strings.TrimSpace(viper.GetString("start-session-target"))
 			if argTarget != "" {
-				// Use target directly without validation for faster startup
+				// Validate instance ID format
+				if !strings.HasPrefix(argTarget, "i-") {
+					panicRed(fmt.Errorf("invalid instance ID format: %s (should start with 'i-')", argTarget))
+				}
 				target = &internal.Target{Name: argTarget}
 			} else {
 				target, err = internal.AskTarget(ctx, *_credential.awsConfig)

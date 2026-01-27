@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-gossm is an interactive CLI tool for connecting to AWS EC2 instances via AWS Systems Manager Session Manager. It provides commands for start-session, ssh, scp, port forwarding, and MFA authentication without requiring inbound port 22 to be open.
+gossm is an interactive CLI tool for connecting to AWS EC2 instances via AWS Systems Manager Session Manager. It provides commands for start-session, listing instances, and executing commands remotely.
 
 ## Build and Test Commands
 
@@ -15,9 +15,6 @@ go build -o gossm .
 # Run all tests with race detection and coverage
 go test -v $(go list ./... | grep -v vendor) --count 1 -race -coverprofile=coverage.txt -covermode=atomic
 
-# Run a single test file
-go test -v ./cmd/ssh_test.go ./cmd/ssh.go ./cmd/root.go -run TestFunctionName
-
 # Run tests for a specific package
 go test -v ./internal/...
 go test -v ./cmd/...
@@ -27,9 +24,6 @@ golangci-lint run ./...
 
 # Lint with auto-fix
 golangci-lint run --fix ./...
-
-# Release test (local snapshot build)
-./scripts/deploy.sh release_test
 ```
 
 ## Architecture
@@ -37,15 +31,27 @@ golangci-lint run --fix ./...
 ### Package Structure
 
 - `main.go` - Entry point, passes version to cmd.Execute()
-- `cmd/` - Cobra CLI commands (root, start, ssh, scp, cmd, exec, list, fwd, fwdrem, mfa)
+- `cmd/` - Cobra CLI commands (root, start, exec, list)
 - `internal/` - Core business logic for AWS interactions and utilities
 
 ### Key Components
 
 **cmd/root.go** - Initializes global credential handling:
 - Manages AWS profile selection from flags, env vars, or defaults
-- Handles shared credentials files including MFA-generated temporary credentials
+- Handles shared credentials files
 - Auto-extracts and manages the embedded SSM session-manager-plugin to `~/.gossm/`
+
+**cmd/session.go** - Start session command:
+- Starts an interactive SSM session with a selected or specified instance
+- Validates instance ID format before connecting
+
+**cmd/exec.go** - Execute command:
+- Executes commands on specific instances via SSM Run Command
+- Validates instance ID and SSM connectivity before execution
+
+**cmd/list.go** - List command:
+- Lists all EC2 instances with SSM agent connected
+- Displays in table format with name, ID, and DNS information
 
 **internal/ssm.go** - AWS SSM and EC2 operations:
 - `FindInstances()` - Discovers EC2 instances with SSM agent connected (runs SSM and EC2 API calls in parallel for performance)
@@ -53,6 +59,7 @@ golangci-lint run --fix ./...
 - `AskTarget()/AskMultiTarget()` - Interactive instance selection via survey library
 - `CreateStartSession()/DeleteStartSession()` - SSM session lifecycle
 - `SendCommand()` - Sends commands to instances via SSM Run Command
+- `PrintCommandInvocation()` - Watches and prints command execution results
 - `CallProcess()` - Executes the SSM plugin as a subprocess
 
 **internal/debug.go** - Debug and timing utilities:
@@ -68,10 +75,10 @@ golangci-lint run --fix ./...
 
 ### Command Flow
 
-1. User runs a command (e.g., `gossm ssh`)
+1. User runs a command (e.g., `gossm start`)
 2. `initConfig()` in root.go loads AWS credentials and region
-3. Command handler in respective file (e.g., ssh.go) calls internal functions
-4. `AskTarget()` presents interactive server selection
+3. Command handler in respective file calls internal functions
+4. `AskTarget()` presents interactive server selection (if needed)
 5. `CreateStartSession()` establishes SSM session
 6. `CallProcess()` invokes the embedded session-manager-plugin
 7. Session terminates and cleanup occurs

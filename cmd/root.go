@@ -17,19 +17,19 @@ import (
 )
 
 const (
-	_defaultProfile = "default"
+	_defaultProfile   = "default"
+	_credentialFormat = "[%s]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n"
 )
 
 var (
 	// rootCmd represents the base command when called without any sub-commands
 	rootCmd = &cobra.Command{
 		Use:   "gossm",
-		Short: `gossm is interactive CLI tool that you select server in AWS and then could connect or send files your AWS server using start-session, ssh, scp in AWS Systems Manger Session Manager.`,
-		Long:  `gossm is interactive CLI tool that you select server in AWS and then could connect or send files your AWS server using start-session, ssh, scp in AWS Systems Manger Session Manager.`,
+		Short: `gossm is interactive CLI tool that you select server in AWS and then could connect using AWS Systems Manager Session Manager.`,
+		Long:  `gossm is interactive CLI tool that you select server in AWS and then could connect using AWS Systems Manager Session Manager.`,
 	}
 
 	_credential              *Credential
-	_credentialWithMFA       = fmt.Sprintf("%s_mfa", config.DefaultSharedCredentialsFilename())
 	_credentialWithTemporary = fmt.Sprintf("%s_temporary", config.DefaultSharedCredentialsFilename())
 )
 
@@ -55,6 +55,53 @@ func panicRed(err error) {
 	os.Exit(1)
 }
 
+// resolveAWSProfile determines the AWS profile to use based on flag, environment variable, or default.
+func resolveAWSProfile(flagProfile string) string {
+	if flagProfile != "" {
+		return flagProfile
+	}
+	if envProfile := os.Getenv("AWS_PROFILE"); envProfile != "" {
+		return envProfile
+	}
+	return _defaultProfile
+}
+
+// checkPluginNeedsUpdate checks if the SSM plugin at the given path needs to be updated.
+// Returns true if the plugin doesn't exist or has a different size than the embedded plugin.
+func checkPluginNeedsUpdate(pluginPath string, getEmbeddedSize func() (int64, error)) (bool, error) {
+	info, err := os.Stat(pluginPath)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	embeddedSize, err := getEmbeddedSize()
+	if err != nil {
+		return false, err
+	}
+
+	return info.Size() != embeddedSize, nil
+}
+
+// getGossmHomePath returns the path to the gossm home directory.
+func getGossmHomePath() (string, error) {
+	home, err := homedir.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".gossm"), nil
+}
+
+// ensureDirectoryExists creates the directory if it doesn't exist.
+func ensureDirectoryExists(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return os.MkdirAll(path, 0700) // Secure permissions: owner only
+	}
+	return nil
+}
+
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	// Enable debug mode if flag is set
@@ -64,49 +111,33 @@ func initConfig() {
 
 	_credential = &Credential{}
 	// 1. get aws profile
-	awsProfile := viper.GetString("profile")
-	if awsProfile == "" {
-		if os.Getenv("AWS_PROFILE") != "" {
-			awsProfile = os.Getenv("AWS_PROFILE")
-		} else {
-			awsProfile = _defaultProfile
-		}
-	}
-	_credential.awsProfile = awsProfile
+	_credential.awsProfile = resolveAWSProfile(viper.GetString("profile"))
 
 	// 2. get region
 	awsRegion := viper.GetString("region")
 
 	// 3. update or create aws ssm plugin.
-	home, err := homedir.Dir()
+	gossmHomePath, err := getGossmHomePath()
 	if err != nil {
 		panicRed(internal.WrapError(err))
 	}
+	_credential.gossmHomePath = gossmHomePath
 
-	_credential.gossmHomePath = filepath.Join(home, ".gossm")
-	if _, err := os.Stat(_credential.gossmHomePath); os.IsNotExist(err) {
-		if err := os.MkdirAll(_credential.gossmHomePath, os.ModePerm); err != nil {
-			panicRed(internal.WrapError(err))
-		}
+	if err := ensureDirectoryExists(_credential.gossmHomePath); err != nil {
+		panicRed(internal.WrapError(err))
 	}
 
 	_credential.ssmPluginPath = filepath.Join(_credential.gossmHomePath, internal.GetSsmPluginName())
 
 	// Check if plugin needs to be created/updated (compare sizes first to avoid loading large binary)
 	pluginTimer := internal.StartTimer("check SSM plugin")
-	needsUpdate := false
-	info, err := os.Stat(_credential.ssmPluginPath)
-	if os.IsNotExist(err) {
-		needsUpdate = true
-	} else if err != nil {
+	needsUpdate, err := checkPluginNeedsUpdate(_credential.ssmPluginPath, internal.GetSsmPluginSize)
+	if err != nil {
 		panicRed(internal.WrapError(err))
-	} else {
-		// Compare sizes without loading the full plugin
-		embeddedSize, err := internal.GetSsmPluginSize()
-		if err != nil {
-			panicRed(internal.WrapError(err))
-		}
-		needsUpdate = info.Size() != embeddedSize
+	}
+	var info os.FileInfo
+	if !needsUpdate {
+		info, _ = os.Stat(_credential.ssmPluginPath)
 	}
 
 	if needsUpdate {
@@ -128,17 +159,10 @@ func initConfig() {
 
 	// 4. set shared credential.
 	sharedCredFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
-	if sharedCredFile == "" {
-		// if gossm mfa credential is existed?
-		if _, err := os.Stat(_credentialWithMFA); !os.IsNotExist(err) {
-			color.Yellow("[Use] gossm default mfa credential file %s", _credentialWithMFA)
-			os.Setenv("AWS_SHARED_CREDENTIALS_FILE", _credentialWithMFA)
-			sharedCredFile = _credentialWithMFA
-		}
-	} else {
+	if sharedCredFile != "" {
 		sharedCredFile, err = filepath.Abs(sharedCredFile)
 		if err != nil {
-			color.Yellow("[Warning] invalid AWS_SHARED_CREDENTIALS_FILE environments path, such as %w", err)
+			color.Yellow("[Warning] invalid AWS_SHARED_CREDENTIALS_FILE environments path: %v", err)
 			os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
 			sharedCredFile = ""
 		} else {
@@ -165,34 +189,12 @@ func initConfig() {
 		cred, err := awsConfig.Credentials.Retrieve(context.Background())
 		// delete invalid shared credential.
 		if err != nil || cred.Expired() || cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
-			color.Yellow("[Expire] gossm default mfa credential file %s", sharedCredFile)
+			color.Yellow("[Expire] credential file %s", sharedCredFile)
 			os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
 		} else {
 			_credential.awsConfig = &awsConfig
 		}
 		credTimer.Stop()
-	}
-
-	// check subcommands
-	args := os.Args[1:]
-	subcmd, _, err := rootCmd.Find(args)
-	if err != nil {
-		panicRed(internal.WrapError(err))
-	}
-
-	switch subcmd.Use {
-	case "mfa": // mfa command doesn't use session token.
-		if _credential.awsConfig != nil {
-			cred, err := _credential.awsConfig.Credentials.Retrieve(context.Background())
-			if err != nil {
-				panicRed(internal.WrapError(err))
-			}
-
-			if cred.SessionToken != "" { // delete shared credentials
-				os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
-				_credential.awsConfig = nil
-			}
-		}
 	}
 
 	if _credential.awsConfig == nil { // not use shared credential
@@ -215,11 +217,6 @@ func initConfig() {
 			panicRed(internal.WrapError(err))
 		}
 
-		// For mfa command, ensure we don't use session token credentials
-		if subcmd.Use == "mfa" && temporaryCredentials.SessionToken != "" {
-			panicRed(internal.WrapError(fmt.Errorf("[err] mfa command requires non-session credentials")))
-		}
-
 		if temporaryCredentials.Expired() || temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" {
 			panicRed(internal.WrapError(fmt.Errorf("[err] not found valid credentials")))
 		}
@@ -231,7 +228,7 @@ func initConfig() {
 
 		// [ISSUE] KMS Encrypt, must use AWS_SHARED_CREDENTIALS_FILE with SharedConfig.
 		// [INFO] write temporaryCredentials to file.
-		temporaryCredentialsString := fmt.Sprintf(mfaCredentialFormat, _credential.awsProfile, temporaryCredentials.AccessKeyID,
+		temporaryCredentialsString := fmt.Sprintf(_credentialFormat, _credential.awsProfile, temporaryCredentials.AccessKeyID,
 			temporaryCredentials.SecretAccessKey, temporaryCredentials.SessionToken)
 		if err := os.WriteFile(_credentialWithTemporary, []byte(temporaryCredentialsString), 0600); err != nil {
 			panicRed(internal.WrapError(err))
