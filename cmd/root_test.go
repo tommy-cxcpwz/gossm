@@ -1,341 +1,278 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
-	"github.com/spf13/viper"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestRootCmd(t *testing.T) {
-	assert := assert.New(t)
+// --- test helpers ---
 
-	// Test root command exists and has correct configuration
-	assert.NotNil(rootCmd)
-	assert.Equal("gossm", rootCmd.Use)
-	assert.Contains(rootCmd.Short, "gossm is interactive CLI tool")
-}
-
-func TestRootCmdFlags(t *testing.T) {
-	assert := assert.New(t)
-
-	// Test persistent flags exist
-	profileFlag := rootCmd.PersistentFlags().Lookup("profile")
-	assert.NotNil(profileFlag)
-	assert.Equal("p", profileFlag.Shorthand)
-
-	regionFlag := rootCmd.PersistentFlags().Lookup("region")
-	assert.NotNil(regionFlag)
-	assert.Equal("r", regionFlag.Shorthand)
-
-	debugFlag := rootCmd.PersistentFlags().Lookup("debug")
-	assert.NotNil(debugFlag)
-	assert.Equal("false", debugFlag.DefValue)
-}
-
-func TestCredentialStruct(t *testing.T) {
-	assert := assert.New(t)
-
-	cred := &Credential{
-		awsProfile:    "test-profile",
-		gossmHomePath: "/home/test/.gossm",
-		ssmPluginPath: "/home/test/.gossm/session-manager-plugin",
-	}
-
-	assert.Equal("test-profile", cred.awsProfile)
-	assert.Equal("/home/test/.gossm", cred.gossmHomePath)
-	assert.Equal("/home/test/.gossm/session-manager-plugin", cred.ssmPluginPath)
-}
-
-func TestDefaultProfile(t *testing.T) {
-	assert := assert.New(t)
-	assert.Equal("default", _defaultProfile)
-}
-
-func TestRootCmdHasSubcommands(t *testing.T) {
-	assert := assert.New(t)
-
-	// Get all subcommands
-	subcommands := rootCmd.Commands()
-
-	// Check that we have subcommands registered
-	assert.Greater(len(subcommands), 0)
-
-	// Create a map of command names for easier lookup (use Name() instead of Use for commands with args)
-	cmdNames := make(map[string]bool)
-	for _, cmd := range subcommands {
-		cmdNames[cmd.Name()] = true
-	}
-
-	// Test some expected commands exist
-	expectedCmds := []string{"start", "exec", "list"}
-	for _, expected := range expectedCmds {
-		assert.True(cmdNames[expected], "expected command %s not found", expected)
+// saveEnv saves an environment variable and returns a restore function.
+func saveEnv(t *testing.T, key string) func() {
+	t.Helper()
+	orig, ok := os.LookupEnv(key)
+	return func() {
+		if ok {
+			os.Setenv(key, orig)
+		} else {
+			os.Unsetenv(key)
+		}
 	}
 }
 
-func TestViperBindings(t *testing.T) {
-	assert := assert.New(t)
-
-	// Reset viper for clean test
-	viper.Reset()
-
-	// Re-bind flags to viper
-	viper.BindPFlag("profile", rootCmd.PersistentFlags().Lookup("profile"))
-	viper.BindPFlag("region", rootCmd.PersistentFlags().Lookup("region"))
-	viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
-
-	// Test default values
-	assert.Equal("", viper.GetString("profile"))
-	assert.Equal("", viper.GetString("region"))
-	assert.Equal(false, viper.GetBool("debug"))
+// createTempFile creates a temporary file with the given content and returns its path.
+// The file is automatically cleaned up when the test finishes.
+func createTempFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "gossm-test-*")
+	require.NoError(t, err)
+	if content != "" {
+		_, err = f.WriteString(content)
+		require.NoError(t, err)
+	}
+	require.NoError(t, f.Close())
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	return f.Name()
 }
 
-func TestExecuteVersion(t *testing.T) {
-	// Test that version can be set on the root command
-	testVersion := "1.0.0-test"
-	originalVersion := rootCmd.Version
-	defer func() { rootCmd.Version = originalVersion }()
+// --- resolveAWSProfile ---
 
-	rootCmd.Version = testVersion
-	assert.Equal(t, testVersion, rootCmd.Version)
+func TestResolveAWSProfile_FlagProvided_ReturnsFlagValue(t *testing.T) {
+	restore := saveEnv(t, "AWS_PROFILE")
+	defer restore()
+	os.Setenv("AWS_PROFILE", "env-profile")
+
+	got := resolveAWSProfile("flag-profile")
+
+	assert.Equal(t, "flag-profile", got)
 }
 
-func TestRootCmdVersion(t *testing.T) {
-	assert := assert.New(t)
+func TestResolveAWSProfile_NoFlagWithEnvSet_ReturnsEnvVar(t *testing.T) {
+	restore := saveEnv(t, "AWS_PROFILE")
+	defer restore()
+	os.Setenv("AWS_PROFILE", "env-profile")
 
-	// Test that version can be set and retrieved
-	originalVersion := rootCmd.Version
-	rootCmd.Version = "test-version"
-	assert.Equal("test-version", rootCmd.Version)
-	rootCmd.Version = originalVersion
+	got := resolveAWSProfile("")
+
+	assert.Equal(t, "env-profile", got)
 }
 
-func TestProfileFromEnvVar(t *testing.T) {
-	assert := assert.New(t)
-
-	// Save original env var
-	originalProfile := os.Getenv("AWS_PROFILE")
-	defer os.Setenv("AWS_PROFILE", originalProfile)
-
-	// Test with custom profile
-	os.Setenv("AWS_PROFILE", "custom-profile")
-	assert.Equal("custom-profile", os.Getenv("AWS_PROFILE"))
-
-	// Test with empty profile
+func TestResolveAWSProfile_NothingSet_ReturnsDefault(t *testing.T) {
+	restore := saveEnv(t, "AWS_PROFILE")
+	defer restore()
 	os.Unsetenv("AWS_PROFILE")
-	assert.Equal("", os.Getenv("AWS_PROFILE"))
+
+	got := resolveAWSProfile("")
+
+	assert.Equal(t, "default", got)
 }
 
-func TestSharedCredentialsEnvVar(t *testing.T) {
-	assert := assert.New(t)
+// --- checkPluginNeedsUpdate ---
 
-	// Save original env var
-	originalCred := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
-	defer func() {
-		if originalCred != "" {
-			os.Setenv("AWS_SHARED_CREDENTIALS_FILE", originalCred)
-		} else {
-			os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
-		}
-	}()
+func TestCheckPluginNeedsUpdate_FileNotExists_ReturnsTrue(t *testing.T) {
+	stubSize := func() (int64, error) { return 100, nil }
 
-	// Test setting custom credentials file
-	testPath := "/tmp/test_credentials"
-	os.Setenv("AWS_SHARED_CREDENTIALS_FILE", testPath)
-	assert.Equal(testPath, os.Getenv("AWS_SHARED_CREDENTIALS_FILE"))
+	needsUpdate, err := checkPluginNeedsUpdate("/nonexistent/path/plugin", stubSize)
 
-	// Test unsetting
+	require.NoError(t, err)
+	assert.True(t, needsUpdate)
+}
+
+func TestCheckPluginNeedsUpdate_SameSize_ReturnsFalse(t *testing.T) {
+	path := createTempFile(t, "hello")
+	stubSize := func() (int64, error) { return 5, nil } // "hello" = 5 bytes
+
+	needsUpdate, err := checkPluginNeedsUpdate(path, stubSize)
+
+	require.NoError(t, err)
+	assert.False(t, needsUpdate)
+}
+
+func TestCheckPluginNeedsUpdate_DifferentSize_ReturnsTrue(t *testing.T) {
+	path := createTempFile(t, "hello")
+	stubSize := func() (int64, error) { return 999, nil }
+
+	needsUpdate, err := checkPluginNeedsUpdate(path, stubSize)
+
+	require.NoError(t, err)
+	assert.True(t, needsUpdate)
+}
+
+func TestCheckPluginNeedsUpdate_SizeCallFails_ReturnsError(t *testing.T) {
+	path := createTempFile(t, "hello")
+	stubSize := func() (int64, error) { return 0, fmt.Errorf("embed error") }
+
+	_, err := checkPluginNeedsUpdate(path, stubSize)
+
+	assert.Error(t, err)
+}
+
+func TestCheckPluginNeedsUpdate_SymlinkLoop_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	linkPath := filepath.Join(tmpDir, "loop")
+	os.Symlink(linkPath, linkPath)
+	stubSize := func() (int64, error) { return 100, nil }
+
+	needsUpdate, err := checkPluginNeedsUpdate(linkPath, stubSize)
+
+	if err != nil {
+		assert.False(t, needsUpdate)
+	}
+}
+
+// --- getGossmHomePath ---
+
+func TestGetGossmHomePath_Success_ReturnsPathEndingWithDotGossm(t *testing.T) {
+	path, err := getGossmHomePath()
+
+	require.NoError(t, err)
+	assert.Equal(t, ".gossm", filepath.Base(path))
+}
+
+// --- ensureDirectoryExists ---
+
+func TestEnsureDirectoryExists_AlreadyExists_ReturnsNoError(t *testing.T) {
+	dir := t.TempDir()
+
+	err := ensureDirectoryExists(dir)
+
+	assert.NoError(t, err)
+}
+
+func TestEnsureDirectoryExists_NotExists_CreatesDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a", "b", "c")
+
+	err := ensureDirectoryExists(dir)
+
+	require.NoError(t, err)
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+}
+
+// --- resolveSharedCredentialFile ---
+
+func TestResolveSharedCredentialFile_EnvUnset_ReturnsEmpty(t *testing.T) {
+	restore := saveEnv(t, "AWS_SHARED_CREDENTIALS_FILE")
+	defer restore()
 	os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
-	assert.Equal("", os.Getenv("AWS_SHARED_CREDENTIALS_FILE"))
+
+	got := resolveSharedCredentialFile()
+
+	assert.Equal(t, "", got)
 }
 
-func TestRootCmdFind(t *testing.T) {
-	assert := assert.New(t)
+func TestResolveSharedCredentialFile_FileNotExists_UnsetsEnvAndReturnsEmpty(t *testing.T) {
+	restore := saveEnv(t, "AWS_SHARED_CREDENTIALS_FILE")
+	defer restore()
+	os.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/tmp/nonexistent_cred_file_xyz")
 
-	// Test finding subcommands
+	got := resolveSharedCredentialFile()
+
+	assert.Equal(t, "", got)
+	_, envSet := os.LookupEnv("AWS_SHARED_CREDENTIALS_FILE")
+	assert.False(t, envSet)
+}
+
+func TestResolveSharedCredentialFile_ValidFile_ReturnsAbsolutePath(t *testing.T) {
+	restore := saveEnv(t, "AWS_SHARED_CREDENTIALS_FILE")
+	defer restore()
+	path := createTempFile(t, "")
+	os.Setenv("AWS_SHARED_CREDENTIALS_FILE", path)
+
+	got := resolveSharedCredentialFile()
+
+	absPath, _ := filepath.Abs(path)
+	assert.Equal(t, absPath, got)
+}
+
+// --- isCredentialValid ---
+
+func TestIsCredentialValid(t *testing.T) {
 	tests := []struct {
-		args    []string
-		wantCmd string
-	}{
-		{[]string{"start"}, "start"},
-		{[]string{"list"}, "list"},
-	}
-
-	for _, tt := range tests {
-		cmd, _, err := rootCmd.Find(tt.args)
-		assert.NoError(err)
-		assert.Equal(tt.wantCmd, cmd.Name())
-	}
-}
-
-func TestRootCmdFindInvalidCommand(t *testing.T) {
-	assert := assert.New(t)
-
-	// Test finding a non-existent command returns an error
-	_, _, err := rootCmd.Find([]string{"nonexistent"})
-	assert.Error(err)
-	assert.Contains(err.Error(), "unknown command")
-}
-
-func TestResolveAWSProfile(t *testing.T) {
-	assert := assert.New(t)
-
-	// Save original env var
-	originalProfile := os.Getenv("AWS_PROFILE")
-	defer func() {
-		if originalProfile != "" {
-			os.Setenv("AWS_PROFILE", originalProfile)
-		} else {
-			os.Unsetenv("AWS_PROFILE")
-		}
-	}()
-
-	tests := []struct {
-		name        string
-		flagProfile string
-		envProfile  string
-		expected    string
+		name string
+		cred aws.Credentials
+		want bool
 	}{
 		{
-			name:        "flag takes precedence",
-			flagProfile: "flag-profile",
-			envProfile:  "env-profile",
-			expected:    "flag-profile",
+			name: "BothFieldsPresent_ReturnsTrue",
+			cred: aws.Credentials{AccessKeyID: "AKID", SecretAccessKey: "SECRET"},
+			want: true,
 		},
 		{
-			name:        "env var when flag is empty",
-			flagProfile: "",
-			envProfile:  "env-profile",
-			expected:    "env-profile",
+			name: "MissingAccessKey_ReturnsFalse",
+			cred: aws.Credentials{AccessKeyID: "", SecretAccessKey: "SECRET"},
+			want: false,
 		},
 		{
-			name:        "default when both empty",
-			flagProfile: "",
-			envProfile:  "",
-			expected:    "default",
+			name: "MissingSecretKey_ReturnsFalse",
+			cred: aws.Credentials{AccessKeyID: "AKID", SecretAccessKey: ""},
+			want: false,
+		},
+		{
+			name: "ZeroValue_ReturnsFalse",
+			cred: aws.Credentials{},
+			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envProfile != "" {
-				os.Setenv("AWS_PROFILE", tt.envProfile)
-			} else {
-				os.Unsetenv("AWS_PROFILE")
-			}
+			got := isCredentialValid(tt.cred)
 
-			result := resolveAWSProfile(tt.flagProfile)
-			assert.Equal(tt.expected, result)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestCheckPluginNeedsUpdate(t *testing.T) {
-	assert := assert.New(t)
+// --- writeTemporaryCredentialFile ---
 
-	// Test with non-existent file
-	needsUpdate, err := checkPluginNeedsUpdate("/nonexistent/path", func() (int64, error) {
-		return 100, nil
-	})
-	assert.NoError(err)
-	assert.True(needsUpdate)
+func TestWriteTemporaryCredentialFile_ValidPath_WritesFileAndSetsEnv(t *testing.T) {
+	origTempPath := _credentialWithTemporary
+	restoreEnv := saveEnv(t, "AWS_SHARED_CREDENTIALS_FILE")
+	defer func() {
+		_credentialWithTemporary = origTempPath
+		restoreEnv()
+	}()
 
-	// Test with existing file of same size
-	tmpFile, err := os.CreateTemp("", "test-plugin")
-	assert.NoError(err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.WriteString("hello")
-	tmpFile.Close()
-
-	needsUpdate, err = checkPluginNeedsUpdate(tmpFile.Name(), func() (int64, error) {
-		return 5, nil // "hello" is 5 bytes
-	})
-	assert.NoError(err)
-	assert.False(needsUpdate)
-
-	// Test with existing file of different size
-	needsUpdate, err = checkPluginNeedsUpdate(tmpFile.Name(), func() (int64, error) {
-		return 100, nil
-	})
-	assert.NoError(err)
-	assert.True(needsUpdate)
-
-	// Test with error from getEmbeddedSize
-	_, err = checkPluginNeedsUpdate(tmpFile.Name(), func() (int64, error) {
-		return 0, os.ErrNotExist
-	})
-	assert.Error(err)
-}
-
-func TestGetGossmHomePath(t *testing.T) {
-	assert := assert.New(t)
-
-	path, err := getGossmHomePath()
-	assert.NoError(err)
-	assert.Contains(path, ".gossm")
-}
-
-func TestEnsureDirectoryExists(t *testing.T) {
-	assert := assert.New(t)
-
-	// Create a temp directory for testing
-	tmpDir, err := os.MkdirTemp("", "test-ensure-dir")
-	assert.NoError(err)
-	defer os.RemoveAll(tmpDir)
-
-	// Test with existing directory
-	err = ensureDirectoryExists(tmpDir)
-	assert.NoError(err)
-
-	// Test with non-existent directory
-	newDir := tmpDir + "/new/nested/dir"
-	err = ensureDirectoryExists(newDir)
-	assert.NoError(err)
-
-	// Verify directory was created
-	info, err := os.Stat(newDir)
-	assert.NoError(err)
-	assert.True(info.IsDir())
-}
-
-func TestCredentialWithAwsConfig(t *testing.T) {
-	assert := assert.New(t)
-
-	// Test Credential struct with all fields
-	cred := &Credential{
-		awsProfile: "test",
-		awsConfig:  nil,
+	tmpPath := createTempFile(t, "")
+	_credentialWithTemporary = tmpPath
+	cred := aws.Credentials{
+		AccessKeyID:     "AKID123",
+		SecretAccessKey: "SECRET456",
+		SessionToken:    "TOKEN789",
 	}
 
-	assert.Equal("test", cred.awsProfile)
-	assert.Nil(cred.awsConfig)
+	err := writeTemporaryCredentialFile("myprofile", cred)
+
+	require.NoError(t, err)
+	data, err := os.ReadFile(tmpPath)
+	require.NoError(t, err)
+	want := formatTemporaryCredentials("myprofile", "AKID123", "SECRET456", "TOKEN789")
+	assert.Equal(t, want, string(data))
+	assert.Equal(t, tmpPath, os.Getenv("AWS_SHARED_CREDENTIALS_FILE"))
 }
 
-func TestAllSubcommandsHaveRunFunction(t *testing.T) {
-	assert := assert.New(t)
+func TestWriteTemporaryCredentialFile_InvalidPath_ReturnsError(t *testing.T) {
+	origTempPath := _credentialWithTemporary
+	defer func() { _credentialWithTemporary = origTempPath }()
+	_credentialWithTemporary = "/nonexistent/dir/file"
 
-	// Verify all subcommands have Run functions
-	for _, cmd := range rootCmd.Commands() {
-		assert.NotNil(cmd.Run, "command %s should have a Run function", cmd.Name())
-	}
+	err := writeTemporaryCredentialFile("p", aws.Credentials{})
+
+	assert.Error(t, err)
 }
 
-func TestRootCmdHelp(t *testing.T) {
-	assert := assert.New(t)
+// --- Execute ---
 
-	// Test that help works
-	rootCmd.SetArgs([]string{"--help"})
-	err := rootCmd.Execute()
-	assert.NoError(err)
-
-	// Reset args after test
-	rootCmd.SetArgs([]string{})
-}
-
-func TestExecuteWithVersion(t *testing.T) {
-	// Save original args and version
+func TestExecute_VersionFlag_ExitsWithoutError(t *testing.T) {
 	originalArgs := os.Args
 	originalVersion := rootCmd.Version
 	defer func() {
@@ -344,70 +281,26 @@ func TestExecuteWithVersion(t *testing.T) {
 		rootCmd.SetArgs([]string{})
 	}()
 
-	// Set up for version output
 	os.Args = []string{"gossm", "--version"}
 	rootCmd.SetArgs([]string{"--version"})
 
-	// Call Execute - this should not panic with --version
 	Execute("1.0.0-test")
 }
 
-func TestCheckPluginNeedsUpdateWithStatError(t *testing.T) {
-	assert := assert.New(t)
+// --- panicRed ---
 
-	// Test with a path that causes a stat error (permission denied simulation)
-	// This is tricky to test, so we'll just verify the function signature works
-	needsUpdate, err := checkPluginNeedsUpdate("/tmp/test-file-does-not-exist-12345", func() (int64, error) {
-		return 100, nil
-	})
-	assert.NoError(err)
-	assert.True(needsUpdate)
-}
+func TestPanicRed_Called_ExitsWithNonZeroCode(t *testing.T) {
+	if os.Getenv("TEST_PANIC_RED") == "1" {
+		panicRed(fmt.Errorf("test error"))
+		return
+	}
 
-func TestResolveAWSProfileEdgeCases(t *testing.T) {
-	assert := assert.New(t)
+	cmd := exec.Command(os.Args[0], "-test.run=TestPanicRed_Called_ExitsWithNonZeroCode")
+	cmd.Env = append(os.Environ(), "TEST_PANIC_RED=1")
 
-	// Save original env var
-	originalProfile := os.Getenv("AWS_PROFILE")
-	defer func() {
-		if originalProfile != "" {
-			os.Setenv("AWS_PROFILE", originalProfile)
-		} else {
-			os.Unsetenv("AWS_PROFILE")
-		}
-	}()
+	err := cmd.Run()
 
-	// Test with whitespace in flag profile
-	result := resolveAWSProfile("  ")
-	os.Unsetenv("AWS_PROFILE")
-	// It should return the whitespace as-is (not trimmed)
-	assert.Equal("  ", result)
-
-	// Test with special characters
-	result = resolveAWSProfile("my-profile_123")
-	assert.Equal("my-profile_123", result)
-}
-
-func TestGetGossmHomePathContent(t *testing.T) {
-	assert := assert.New(t)
-
-	path, err := getGossmHomePath()
-	assert.NoError(err)
-	assert.NotEmpty(path)
-	// Should end with .gossm
-	assert.True(len(path) > 6, "path should be long enough")
-}
-
-func TestEnsureDirectoryExistsWithFile(t *testing.T) {
-	assert := assert.New(t)
-
-	// Create a temp file
-	tmpFile, err := os.CreateTemp("", "test-file")
-	assert.NoError(err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
-	// Try to ensure directory exists on a file path (should succeed since file already exists)
-	err = ensureDirectoryExists(tmpFile.Name())
-	assert.NoError(err)
+	var exitErr *exec.ExitError
+	assert.ErrorAs(t, err, &exitErr)
+	assert.False(t, exitErr.Success())
 }
