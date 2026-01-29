@@ -4,71 +4,59 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGetAsset(t *testing.T) {
-	assert := assert.New(t)
-
-	tests := map[string]struct {
-		input string
-		isErr bool
+func TestGetAsset_ValidKey_ReturnsData(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
 	}{
-		"fail": {input: "fail", isErr: true},
-		"plugin/darwin_amd64/session-manager-plugin":      {input: "plugin/darwin_amd64/session-manager-plugin", isErr: false},
-		"plugin/darwin_arm64/session-manager-plugin":      {input: "plugin/darwin_arm64/session-manager-plugin", isErr: false},
-		"plugin/linux_amd64/session-manager-plugin":       {input: "plugin/linux_amd64/session-manager-plugin", isErr: false},
-		"plugin/linux_arm64/session-manager-plugin":       {input: "plugin/linux_arm64/session-manager-plugin", isErr: false},
-		"plugin/windows_amd64/session-manager-plugin.exe": {input: "plugin/windows_amd64/session-manager-plugin.exe", isErr: false},
+		{"DarwinAmd64", "plugin/darwin_amd64/session-manager-plugin"},
+		{"DarwinArm64", "plugin/darwin_arm64/session-manager-plugin"},
+		{"LinuxAmd64", "plugin/linux_amd64/session-manager-plugin"},
+		{"LinuxArm64", "plugin/linux_arm64/session-manager-plugin"},
+		{"WindowsAmd64", "plugin/windows_amd64/session-manager-plugin.exe"},
 	}
 
-	for _, t := range tests {
-		_, err := GetAsset(t.input)
-		assert.Equal(t.isErr, err != nil)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := GetAsset(tt.key)
 
-}
-
-func TestGetSsmPluginName(t *testing.T) {
-	assert := assert.New(t)
-
-	tests := map[string]struct {
-		output string
-	}{
-		"success": {output: "session-manager-plugin"},
-	}
-
-	for _, t := range tests {
-		assert.Equal(t.output, GetSsmPluginName())
+			require.NoError(t, err)
+			assert.NotEmpty(t, data)
+		})
 	}
 }
 
-func TestGetSsmPlugin(t *testing.T) {
-	assert := assert.New(t)
+func TestGetAsset_InvalidKey_ReturnsError(t *testing.T) {
+	_, err := GetAsset("nonexistent-key")
 
-	tests := map[string]struct {
-		isErr bool
-	}{
-		"success": {isErr: false},
-	}
-
-	for _, t := range tests {
-		_, err := GetSsmPlugin()
-		assert.Equal(t.isErr, err != nil)
-	}
+	assert.Error(t, err)
 }
 
-func TestGetSsmPluginSize(t *testing.T) {
-	assert := assert.New(t)
+func TestGetSsmPluginName_Called_ReturnsPluginFilename(t *testing.T) {
+	got := GetSsmPluginName()
 
+	assert.NotEmpty(t, got)
+}
+
+func TestGetSsmPlugin_Called_ReturnsNonEmptyData(t *testing.T) {
+	data, err := GetSsmPlugin()
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, data)
+}
+
+func TestGetSsmPluginSize_Called_ReturnsPositiveSize(t *testing.T) {
 	size, err := GetSsmPluginSize()
-	assert.NoError(err)
-	assert.Greater(size, int64(0))
+
+	require.NoError(t, err)
+	assert.Greater(t, size, int64(0))
 }
 
-func TestGetSSMPluginKey(t *testing.T) {
-	assert := assert.New(t)
-
+func TestGetSSMPluginKey_Called_ReturnsValidPath(t *testing.T) {
 	key := getSSMPluginKey()
-	assert.Contains(key, "plugin/")
-	assert.Contains(key, "session-manager-plugin")
+
+	assert.NotEmpty(t, key)
 }

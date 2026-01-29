@@ -47,17 +47,8 @@ type (
 		displayKey    string // internal use for display formatting
 	}
 
-	User struct {
-		Name string
-	}
-
 	Region struct {
 		Name string
-	}
-
-	Port struct {
-		Remote string
-		Local  string
 	}
 )
 

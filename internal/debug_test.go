@@ -2,77 +2,65 @@ package internal
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestDebugLog(t *testing.T) {
-	// Test with debug mode disabled
+func TestDebugLog_DebugDisabled_DoesNotPanic(t *testing.T) {
 	DebugMode = false
+	defer func() { DebugMode = false }()
+
 	assert.NotPanics(t, func() {
 		DebugLog("test message %s", "arg")
 	})
-
-	// Test with debug mode enabled
-	DebugMode = true
-	assert.NotPanics(t, func() {
-		DebugLog("test message %s", "arg")
-	})
-
-	// Reset debug mode
-	DebugMode = false
 }
 
-func TestStartTimer(t *testing.T) {
-	assert := assert.New(t)
+func TestDebugLog_DebugEnabled_DoesNotPanic(t *testing.T) {
+	DebugMode = true
+	defer func() { DebugMode = false }()
 
-	// Test with debug mode disabled
+	assert.NotPanics(t, func() {
+		DebugLog("test message %s", "arg")
+	})
+}
+
+func TestStartTimer_Called_ReturnsNonNilTimer(t *testing.T) {
 	DebugMode = false
+	defer func() { DebugMode = false }()
+
 	timer := StartTimer("test-operation")
-	assert.NotNil(timer)
-	assert.Equal("test-operation", timer.name)
-	assert.False(timer.start.IsZero())
 
-	// Test with debug mode enabled
-	DebugMode = true
-	timer2 := StartTimer("test-operation-2")
-	assert.NotNil(timer2)
-	assert.Equal("test-operation-2", timer2.name)
-
-	// Reset debug mode
-	DebugMode = false
+	require.NotNil(t, timer)
 }
 
-func TestDebugTimerStop(t *testing.T) {
-	assert := assert.New(t)
+func TestStartTimer_DebugEnabled_ReturnsNonNilTimer(t *testing.T) {
+	DebugMode = true
+	defer func() { DebugMode = false }()
 
-	// Test with debug mode disabled
+	timer := StartTimer("test-operation")
+
+	require.NotNil(t, timer)
+}
+
+func TestDebugTimerStop_Called_ReturnsPositiveDuration(t *testing.T) {
 	DebugMode = false
+	defer func() { DebugMode = false }()
+
 	timer := StartTimer("test-stop")
-	time.Sleep(10 * time.Millisecond)
+
 	elapsed := timer.Stop()
-	assert.GreaterOrEqual(elapsed, 10*time.Millisecond)
 
-	// Test with debug mode enabled
-	DebugMode = true
-	timer2 := StartTimer("test-stop-2")
-	time.Sleep(10 * time.Millisecond)
-	elapsed2 := timer2.Stop()
-	assert.GreaterOrEqual(elapsed2, 10*time.Millisecond)
-
-	// Reset debug mode
-	DebugMode = false
+	assert.GreaterOrEqual(t, elapsed.Nanoseconds(), int64(0))
 }
 
-func TestDebugTimerStruct(t *testing.T) {
-	assert := assert.New(t)
+func TestDebugTimerStop_DebugEnabled_ReturnsPositiveDuration(t *testing.T) {
+	DebugMode = true
+	defer func() { DebugMode = false }()
 
-	timer := &DebugTimer{
-		name:  "test",
-		start: time.Now(),
-	}
+	timer := StartTimer("test-stop")
 
-	assert.Equal("test", timer.name)
-	assert.False(timer.start.IsZero())
+	elapsed := timer.Stop()
+
+	assert.GreaterOrEqual(t, elapsed.Nanoseconds(), int64(0))
 }

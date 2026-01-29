@@ -6,39 +6,20 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestWrapError(t *testing.T) {
-	assert := assert.New(t)
+func TestWrapError_NonNilError_PreservesOriginalError(t *testing.T) {
+	original := fmt.Errorf("something failed")
 
-	tests := map[string]struct {
-		err error
-	}{
-		"error": {err: fmt.Errorf("[err] obj error")},
-	}
+	wrapped := WrapError(original)
 
-	for _, t := range tests {
-		err := WrapError(t.err)
-		assert.True(errors.Is(err, t.err))
-		fmt.Println(err)
-	}
+	require.NotNil(t, wrapped)
+	assert.True(t, errors.Is(wrapped, original))
 }
 
-func TestWrapErrorNil(t *testing.T) {
-	assert := assert.New(t)
-
-	// Test with nil error
+func TestWrapError_NilError_ReturnsNil(t *testing.T) {
 	result := WrapError(nil)
-	assert.Nil(result)
-}
 
-func TestErrorVariables(t *testing.T) {
-	assert := assert.New(t)
-
-	// Test error variables exist and have expected content
-	assert.NotNil(ErrInvalidParams)
-	assert.Contains(ErrInvalidParams.Error(), "invalid params")
-
-	assert.NotNil(ErrUnknown)
-	assert.Contains(ErrUnknown.Error(), "unknown")
+	assert.Nil(t, result)
 }

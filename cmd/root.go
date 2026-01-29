@@ -102,6 +102,47 @@ func ensureDirectoryExists(path string) error {
 	return nil
 }
 
+// resolveSharedCredentialFile validates the AWS_SHARED_CREDENTIALS_FILE env var.
+// Returns the cleaned absolute path if valid, or empty string if invalid/unset.
+func resolveSharedCredentialFile() string {
+	sharedCredFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	if sharedCredFile == "" {
+		return ""
+	}
+	absPath, err := filepath.Abs(sharedCredFile)
+	if err != nil {
+		color.Yellow("[Warning] invalid AWS_SHARED_CREDENTIALS_FILE environments path: %v", err)
+		os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
+		return ""
+	}
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		color.Yellow("[Warning] not found AWS_SHARED_CREDENTIALS_FILE environments file, such as %s", absPath)
+		os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
+		return ""
+	}
+	return absPath
+}
+
+// formatTemporaryCredentials formats credentials into the INI file format.
+func formatTemporaryCredentials(profile, accessKey, secretKey, sessionToken string) string {
+	return fmt.Sprintf(_credentialFormat, profile, accessKey, secretKey, sessionToken)
+}
+
+// isCredentialValid checks if AWS credentials are valid (not expired and have required fields).
+func isCredentialValid(cred aws.Credentials) bool {
+	return !cred.Expired() && cred.AccessKeyID != "" && cred.SecretAccessKey != ""
+}
+
+// writeTemporaryCredentialFile writes credential data to the temporary file and sets the env var.
+func writeTemporaryCredentialFile(profile string, cred aws.Credentials) error {
+	data := formatTemporaryCredentials(profile, cred.AccessKeyID, cred.SecretAccessKey, cred.SessionToken)
+	if err := os.WriteFile(_credentialWithTemporary, []byte(data), 0600); err != nil {
+		return err
+	}
+	os.Setenv("AWS_SHARED_CREDENTIALS_FILE", _credentialWithTemporary)
+	return nil
+}
+
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
 	// Enable debug mode if flag is set
@@ -158,21 +199,7 @@ func initConfig() {
 	pluginTimer.Stop()
 
 	// 4. set shared credential.
-	sharedCredFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
-	if sharedCredFile != "" {
-		sharedCredFile, err = filepath.Abs(sharedCredFile)
-		if err != nil {
-			color.Yellow("[Warning] invalid AWS_SHARED_CREDENTIALS_FILE environments path: %v", err)
-			os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
-			sharedCredFile = ""
-		} else {
-			if _, err := os.Stat(sharedCredFile); os.IsNotExist(err) {
-				color.Yellow("[Warning] not found AWS_SHARED_CREDENTIALS_FILE environments file, such as %s", sharedCredFile)
-				os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
-				sharedCredFile = ""
-			}
-		}
-	}
+	sharedCredFile := resolveSharedCredentialFile()
 
 	// if shared cred file is exist.
 	if sharedCredFile != "" {
@@ -188,7 +215,7 @@ func initConfig() {
 
 		cred, err := awsConfig.Credentials.Retrieve(context.Background())
 		// delete invalid shared credential.
-		if err != nil || cred.Expired() || cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
+		if err != nil || !isCredentialValid(cred) {
 			color.Yellow("[Expire] credential file %s", sharedCredFile)
 			os.Unsetenv("AWS_SHARED_CREDENTIALS_FILE")
 		} else {
@@ -217,7 +244,7 @@ func initConfig() {
 			panicRed(internal.WrapError(err))
 		}
 
-		if temporaryCredentials.Expired() || temporaryCredentials.AccessKeyID == "" || temporaryCredentials.SecretAccessKey == "" {
+		if !isCredentialValid(temporaryCredentials) {
 			panicRed(internal.WrapError(fmt.Errorf("[err] not found valid credentials")))
 		}
 
@@ -228,13 +255,9 @@ func initConfig() {
 
 		// [ISSUE] KMS Encrypt, must use AWS_SHARED_CREDENTIALS_FILE with SharedConfig.
 		// [INFO] write temporaryCredentials to file.
-		temporaryCredentialsString := fmt.Sprintf(_credentialFormat, _credential.awsProfile, temporaryCredentials.AccessKeyID,
-			temporaryCredentials.SecretAccessKey, temporaryCredentials.SessionToken)
-		if err := os.WriteFile(_credentialWithTemporary, []byte(temporaryCredentialsString), 0600); err != nil {
+		if err := writeTemporaryCredentialFile(_credential.awsProfile, temporaryCredentials); err != nil {
 			panicRed(internal.WrapError(err))
 		}
-
-		os.Setenv("AWS_SHARED_CREDENTIALS_FILE", _credentialWithTemporary)
 
 		finalConfigTimer := internal.StartTimer("create final AWS config")
 		awsConfig, err := internal.NewSharedConfig(context.Background(),
