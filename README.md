@@ -120,6 +120,99 @@ $ gossm exec i-0abc123def456789 df -h
 $ gossm exec --skip-check i-0abc123def456789 uptime
 ```
 
+## Architecture
+
+### Execution Flow
+
+The following diagram shows the execution flow when running `gossm list --debug`:
+
+```mermaid
+flowchart TD
+    subgraph "Package var initialization"
+        V1["cmd/root.go var
+        rootCmd = &cobra.Command{...}
+        _credentialWithTemporary = fmt.Sprintf(...)"]
+        V1 --> V2["cmd/exec.go var
+        execCommand = &cobra.Command{...}"]
+        V2 --> V3["cmd/list.go var
+        listCommand = &cobra.Command{...}"]
+        V3 --> V4["cmd/session.go var
+        startSessionCommand = &cobra.Command{...}"]
+    end
+
+    subgraph "Package init — alphabetical file order"
+        V4 --> I1["cmd/exec.go init()
+        rootCmd.AddCommand(execCommand)"]
+        I1 --> I2["cmd/list.go init()
+        rootCmd.AddCommand(listCommand)"]
+        I2 --> I3["cmd/root.go init()
+        define flags, viper bindings,
+        cobra.OnInitialize(initConfig)"]
+        I3 --> I4["cmd/session.go init()
+        rootCmd.AddCommand(startSessionCommand)"]
+    end
+
+    subgraph "main"
+        I4 --> A["main.main()
+        main.go:10"]
+    end
+
+    subgraph "cobra.OnInitialize callback"
+        A --> B["cmd.Execute(version)
+        root.go:45"]
+        B --> C["rootCmd.Execute()
+        root.go:47
+        cobra parses args: list --debug"]
+        C --> D["initConfig()
+        root.go:147"]
+        D --> D1["internal.DebugMode = true
+        root.go:149"]
+        D1 --> D2["resolveAWSProfile()
+        root.go:59"]
+        D2 --> D3["getGossmHomePath()
+        root.go:89"]
+        D3 --> D4["ensureDirectoryExists()
+        root.go:98"]
+        D4 --> D5["checkPluginNeedsUpdate()
+        root.go:71"]
+        D5 --> D6["resolveSharedCredentialFile()
+        root.go:107"]
+        D6 --> D7["internal.NewSharedConfig()
+        aws.go"]
+        D7 --> D8["writeTemporaryCredentialFile()
+        root.go:137"]
+    end
+
+    subgraph "listCommand.Run"
+        D8 --> E["listCommand.Run()
+        list.go:21"]
+        E --> F["internal.FindInstances()
+        ssm.go:120"]
+        F --> G1["goroutine: SSM
+        DescribeInstanceInformation
+        ssm.go:133"]
+        F --> G2["goroutine: EC2
+        DescribeInstances
+        ssm.go:159"]
+        G1 --> H["wg.Wait()
+        intersect SSM ∩ EC2"]
+        G2 --> H
+        H --> I["sort keys + tabwriter
+        print table
+        list.go:35-66"]
+    end
+```
+
+### Startup Order
+
+Go initializes packages in dependency order before `main()` runs:
+
+1. **Package `var` declarations** — `rootCmd`, `execCommand`, `listCommand`, `startSessionCommand` are constructed
+2. **`init()` functions** — each file's `init()` runs in alphabetical file order, registering subcommands and flags
+3. **`main()`** — calls `cmd.Execute()`, which triggers cobra's arg parsing
+4. **`initConfig()`** — cobra's `OnInitialize` callback fires after flag parsing but before the matched command's `Run`
+5. **Command `Run`** — the matched subcommand handler executes
+
 ## LICENSE
 
 This project is licensed under the MIT License.
