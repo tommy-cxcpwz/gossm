@@ -7,6 +7,8 @@ import (
 	"sort"
 	"text/tabwriter"
 
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
@@ -18,17 +20,19 @@ var (
 		Use:   "list",
 		Short: "List all available instances that can be connected via SSM",
 		Long:  "List all available instances that can be connected via SSM",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
+			ssmClient := ssm.NewFromConfig(*_credential.awsConfig)
+			ec2Client := ec2.NewFromConfig(*_credential.awsConfig)
 
-			table, err := internal.FindInstances(ctx, *_credential.awsConfig)
+			table, err := internal.FindInstances(ctx, ssmClient, ec2Client)
 			if err != nil {
-				panicRed(err)
+				return err
 			}
 
 			if len(table) == 0 {
 				color.Yellow("No instances found with SSM agent connected.")
-				return
+				return nil
 			}
 
 			// Sort keys for consistent output
@@ -66,6 +70,7 @@ var (
 			w.Flush()
 
 			fmt.Printf("\n%s %d instance(s) found\n", color.GreenString("[OK]"), len(table))
+			return nil
 		},
 	}
 )

@@ -53,9 +53,8 @@ type (
 )
 
 // AskRegion asks you which selects a region.
-func AskRegion(ctx context.Context, cfg aws.Config) (*Region, error) {
+func AskRegion(ctx context.Context, client EC2DescribeRegionsAPI) (*Region, error) {
 	var regions []string
-	client := ec2.NewFromConfig(cfg)
 
 	output, err := client.DescribeRegions(ctx, &ec2.DescribeRegionsInput{
 		AllRegions: aws.Bool(true),
@@ -86,8 +85,8 @@ func AskRegion(ctx context.Context, cfg aws.Config) (*Region, error) {
 }
 
 // AskTarget asks you which selects an instance.
-func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
-	table, err := FindInstances(ctx, cfg)
+func AskTarget(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec2Client EC2DescribeInstancesAPI) (*Target, error) {
+	table, err := FindInstances(ctx, ssmClient, ec2Client)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +116,7 @@ func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
 }
 
 // FindInstances returns all of instances-map with running state.
-func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, error) {
+func FindInstances(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec2Client EC2DescribeInstancesAPI) (map[string]*Target, error) {
 	timer := StartTimer("FindInstances")
 	defer timer.Stop()
 
@@ -135,11 +134,10 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 		ssmTimer := StartTimer("SSM DescribeInstanceInformation")
 		defer ssmTimer.Stop()
 
-		client := ssm.NewFromConfig(cfg)
 		input := &ssm.DescribeInstanceInformationInput{MaxResults: aws.Int32(maxOutputResults)}
 
 		for {
-			output, err := client.DescribeInstanceInformation(ctx, input)
+			output, err := ssmClient.DescribeInstanceInformation(ctx, input)
 			if err != nil {
 				ssmErr = err
 				return
@@ -161,15 +159,14 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 		ec2Timer := StartTimer("EC2 DescribeInstances")
 		defer ec2Timer.Stop()
 
-		client := ec2.NewFromConfig(cfg)
-		paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{
+		input := &ec2.DescribeInstancesInput{
 			Filters: []ec2_types.Filter{
 				{Name: aws.String("instance-state-name"), Values: []string{"running"}},
 			},
-		})
+		}
 
-		for paginator.HasMorePages() {
-			output, err := paginator.NextPage(ctx)
+		for {
+			output, err := ec2Client.DescribeInstances(ctx, input)
 			if err != nil {
 				ec2Err = err
 				return
@@ -186,6 +183,10 @@ func FindInstances(ctx context.Context, cfg aws.Config) (map[string]*Target, err
 					}
 				}
 			}
+			if output.NextToken == nil {
+				break
+			}
+			input.NextToken = output.NextToken
 		}
 	}()
 
@@ -225,13 +226,12 @@ func getInstanceName(tags []ec2_types.Tag) string {
 }
 
 // FindInstanceIdsWithConnectedSSM asks you which selects instances.
-func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]string, error) {
+func FindInstanceIdsWithConnectedSSM(ctx context.Context, client SSMDescribeInstanceInfoAPI) ([]string, error) {
 	timer := StartTimer("SSM DescribeInstanceInformation")
 	defer timer.Stop()
 
 	var (
 		instances  []string
-		client     = ssm.NewFromConfig(cfg)
 		outputFunc = func(instances []string, output *ssm.DescribeInstanceInformationOutput) []string {
 			for _, inst := range output.InstanceInformationList {
 				instances = append(instances, aws.ToString(inst.InstanceId))
@@ -269,17 +269,15 @@ func FindInstanceIdsWithConnectedSSM(ctx context.Context, cfg aws.Config) ([]str
 }
 
 // CreateStartSession creates start session.
-func CreateStartSession(ctx context.Context, cfg aws.Config, input *ssm.StartSessionInput) (*ssm.StartSessionOutput, error) {
+func CreateStartSession(ctx context.Context, client SSMSessionAPI, input *ssm.StartSessionInput) (*ssm.StartSessionOutput, error) {
 	timer := StartTimer("SSM StartSession API")
 	defer timer.Stop()
 
-	client := ssm.NewFromConfig(cfg)
 	return client.StartSession(ctx, input)
 }
 
 // DeleteStartSession creates session.
-func DeleteStartSession(ctx context.Context, cfg aws.Config, input *ssm.TerminateSessionInput) error {
-	client := ssm.NewFromConfig(cfg)
+func DeleteStartSession(ctx context.Context, client SSMSessionAPI, input *ssm.TerminateSessionInput) error {
 	fmt.Printf("%s %s \n", color.YellowString("Delete Session"),
 		color.YellowString(aws.ToString(input.SessionId)))
 
@@ -288,11 +286,9 @@ func DeleteStartSession(ctx context.Context, cfg aws.Config, input *ssm.Terminat
 }
 
 // SendCommand send commands to instance targets.
-func SendCommand(ctx context.Context, cfg aws.Config, targets []*Target, command string) (*ssm.SendCommandOutput, error) {
+func SendCommand(ctx context.Context, client SSMCommandAPI, targets []*Target, command string) (*ssm.SendCommandOutput, error) {
 	timer := StartTimer("SSM SendCommand API")
 	defer timer.Stop()
-
-	client := ssm.NewFromConfig(cfg)
 
 	// only support to linux (window = "AWS-RunPowerShellScript")
 	docName := "AWS-RunShellScript"
@@ -316,8 +312,7 @@ func SendCommand(ctx context.Context, cfg aws.Config, targets []*Target, command
 }
 
 // PrintCommandInvocation watches command invocations.
-func PrintCommandInvocation(ctx context.Context, cfg aws.Config, inputs []*ssm.GetCommandInvocationInput) {
-	client := ssm.NewFromConfig(cfg)
+func PrintCommandInvocation(ctx context.Context, client SSMCommandAPI, inputs []*ssm.GetCommandInvocationInput) {
 
 	wg := new(sync.WaitGroup)
 	for _, input := range inputs {
