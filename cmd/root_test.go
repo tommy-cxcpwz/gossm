@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -287,20 +286,28 @@ func TestExecute_VersionFlag_ExitsWithoutError(t *testing.T) {
 	Execute("1.0.0-test")
 }
 
-// --- panicRed ---
+// --- cleanupTemporaryCredentialFile ---
 
-func TestPanicRed_Called_ExitsWithNonZeroCode(t *testing.T) {
-	if os.Getenv("TEST_PANIC_RED") == "1" {
-		panicRed(fmt.Errorf("test error"))
-		return
-	}
+func TestCleanupTemporaryCredentialFile_FileExists_RemovesFile(t *testing.T) {
+	origTempPath := _credentialWithTemporary
+	defer func() { _credentialWithTemporary = origTempPath }()
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestPanicRed_Called_ExitsWithNonZeroCode")
-	cmd.Env = append(os.Environ(), "TEST_PANIC_RED=1")
+	tmpPath := createTempFile(t, "temp cred data")
+	_credentialWithTemporary = tmpPath
 
-	err := cmd.Run()
+	cleanupTemporaryCredentialFile()
 
-	var exitErr *exec.ExitError
-	assert.ErrorAs(t, err, &exitErr)
-	assert.False(t, exitErr.Success())
+	_, err := os.Stat(tmpPath)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCleanupTemporaryCredentialFile_FileNotExists_DoesNotPanic(t *testing.T) {
+	origTempPath := _credentialWithTemporary
+	defer func() { _credentialWithTemporary = origTempPath }()
+
+	_credentialWithTemporary = "/nonexistent/path/file"
+
+	assert.NotPanics(t, func() {
+		cleanupTemporaryCredentialFile()
+	})
 }

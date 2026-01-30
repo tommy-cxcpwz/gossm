@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/fatih/color"
 	"github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
@@ -27,6 +28,9 @@ var (
 		Use:   "gossm",
 		Short: `gossm is interactive CLI tool that you select server in AWS and then could connect using AWS Systems Manager Session Manager.`,
 		Long:  `gossm is interactive CLI tool that you select server in AWS and then could connect using AWS Systems Manager Session Manager.`,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return initConfig()
+		},
 	}
 
 	_credential              *Credential
@@ -44,15 +48,18 @@ type Credential struct {
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute(version string) {
 	rootCmd.Version = version
+	defer cleanupTemporaryCredentialFile()
 	if err := rootCmd.Execute(); err != nil {
-		panicRed(err)
+		fmt.Println(color.RedString("[err] %s", err.Error()))
+		os.Exit(1)
 	}
 }
 
-// panicRed raises error with text.
-func panicRed(err error) {
-	fmt.Println(color.RedString("[err] %s", err.Error()))
-	os.Exit(1)
+// cleanupTemporaryCredentialFile removes the temporary credential file if it exists.
+func cleanupTemporaryCredentialFile() {
+	if _, err := os.Stat(_credentialWithTemporary); err == nil {
+		os.Remove(_credentialWithTemporary)
+	}
 }
 
 // resolveAWSProfile determines the AWS profile to use based on flag, environment variable, or default.
@@ -144,7 +151,7 @@ func writeTemporaryCredentialFile(profile string, cred aws.Credentials) error {
 }
 
 // initConfig reads in config file and ENV variables if set.
-func initConfig() {
+func initConfig() error {
 	// Enable debug mode if flag is set
 	internal.DebugMode = viper.GetBool("debug")
 	timer := internal.StartTimer("initConfig")
@@ -160,12 +167,12 @@ func initConfig() {
 	// 3. update or create aws ssm plugin.
 	gossmHomePath, err := getGossmHomePath()
 	if err != nil {
-		panicRed(internal.WrapError(err))
+		return internal.WrapError(err)
 	}
 	_credential.gossmHomePath = gossmHomePath
 
 	if err := ensureDirectoryExists(_credential.gossmHomePath); err != nil {
-		panicRed(internal.WrapError(err))
+		return internal.WrapError(err)
 	}
 
 	_credential.ssmPluginPath = filepath.Join(_credential.gossmHomePath, internal.GetSsmPluginName())
@@ -174,7 +181,7 @@ func initConfig() {
 	pluginTimer := internal.StartTimer("check SSM plugin")
 	needsUpdate, err := checkPluginNeedsUpdate(_credential.ssmPluginPath, internal.GetSsmPluginSize)
 	if err != nil {
-		panicRed(internal.WrapError(err))
+		return internal.WrapError(err)
 	}
 	var info os.FileInfo
 	if !needsUpdate {
@@ -185,7 +192,7 @@ func initConfig() {
 		internal.DebugLog("plugin needs update, loading binary...")
 		plugin, err := internal.GetSsmPlugin()
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 		if info == nil {
 			color.Green("[create] aws ssm plugin")
@@ -193,7 +200,7 @@ func initConfig() {
 			color.Green("[update] aws ssm plugin")
 		}
 		if err := os.WriteFile(_credential.ssmPluginPath, plugin, 0755); err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 	}
 	pluginTimer.Stop()
@@ -210,7 +217,7 @@ func initConfig() {
 			[]string{sharedCredFile},
 		)
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 
 		cred, err := awsConfig.Credentials.Retrieve(context.Background())
@@ -234,18 +241,18 @@ func initConfig() {
 		temporaryConfig, err = internal.NewSharedConfig(context.Background(), _credential.awsProfile,
 			[]string{config.DefaultSharedConfigFilename()}, []string{config.DefaultSharedCredentialsFilename()})
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 
 		retrieveTimer := internal.StartTimer("retrieve credentials")
 		temporaryCredentials, err = temporaryConfig.Credentials.Retrieve(context.Background())
 		retrieveTimer.Stop()
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 
 		if !isCredentialValid(temporaryCredentials) {
-			panicRed(internal.WrapError(fmt.Errorf("[err] not found valid credentials")))
+			return internal.WrapError(fmt.Errorf("[err] not found valid credentials"))
 		}
 
 		// extract aws region if awsRegion is empty.
@@ -256,7 +263,7 @@ func initConfig() {
 		// [ISSUE] KMS Encrypt, must use AWS_SHARED_CREDENTIALS_FILE with SharedConfig.
 		// [INFO] write temporaryCredentials to file.
 		if err := writeTemporaryCredentialFile(_credential.awsProfile, temporaryCredentials); err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 
 		finalConfigTimer := internal.StartTimer("create final AWS config")
@@ -264,7 +271,7 @@ func initConfig() {
 			_credential.awsProfile, []string{}, []string{_credentialWithTemporary},
 		)
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 		_credential.awsConfig = &awsConfig
 		finalConfigTimer.Stop()
@@ -276,18 +283,18 @@ func initConfig() {
 		_credential.awsConfig.Region = awsRegion
 	}
 	if _credential.awsConfig.Region == "" { // ask region
-		askRegion, err := internal.AskRegion(context.Background(), *_credential.awsConfig)
+		ec2Client := ec2.NewFromConfig(*_credential.awsConfig)
+		askRegion, err := internal.AskRegion(context.Background(), ec2Client)
 		if err != nil {
-			panicRed(internal.WrapError(err))
+			return internal.WrapError(err)
 		}
 		_credential.awsConfig.Region = askRegion.Name
 	}
 	color.Green("region (%s)", _credential.awsConfig.Region)
+	return nil
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.

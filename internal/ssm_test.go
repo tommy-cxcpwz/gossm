@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,27 +17,12 @@ func TestFindInstances_ValidConfig_ReturnsNoError(t *testing.T) {
 		[]string{config.DefaultSharedCredentialsFilename()})
 	require.NoError(t, err)
 
-	tests := []struct {
-		name  string
-		ctx   context.Context
-		cfg   aws.Config
-		isErr bool
-	}{
-		{
-			name:  "Success_ReturnsInstances",
-			ctx:   context.Background(),
-			cfg:   cfg,
-			isErr: false,
-		},
-	}
+	ssmClient := ssm.NewFromConfig(cfg)
+	ec2Client := ec2.NewFromConfig(cfg)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := FindInstances(tt.ctx, tt.cfg)
+	_, err = FindInstances(context.Background(), ssmClient, ec2Client)
 
-			assert.Equal(t, tt.isErr, err != nil)
-		})
-	}
+	assert.NoError(t, err)
 }
 
 func TestFindInstanceIdsWithConnectedSSM_ValidConfig_ReturnsNoError(t *testing.T) {
@@ -45,27 +31,11 @@ func TestFindInstanceIdsWithConnectedSSM_ValidConfig_ReturnsNoError(t *testing.T
 		[]string{config.DefaultSharedCredentialsFilename()})
 	require.NoError(t, err)
 
-	tests := []struct {
-		name  string
-		ctx   context.Context
-		cfg   aws.Config
-		isErr bool
-	}{
-		{
-			name:  "Success_ReturnsInstanceIds",
-			ctx:   context.Background(),
-			cfg:   cfg,
-			isErr: false,
-		},
-	}
+	client := ssm.NewFromConfig(cfg)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := FindInstanceIdsWithConnectedSSM(tt.ctx, tt.cfg)
+	_, err = FindInstanceIdsWithConnectedSSM(context.Background(), client)
 
-			assert.Equal(t, tt.isErr, err != nil)
-		})
-	}
+	assert.NoError(t, err)
 }
 
 func TestPrintReady_Called_DoesNotPanic(t *testing.T) {

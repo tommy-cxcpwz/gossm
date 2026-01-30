@@ -27,23 +27,23 @@ Examples:
   gossm exec i-0abc123def456789 df -h
   gossm exec --skip-check i-0abc123def456789 ls -la`,
 		Args: cobra.MinimumNArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
+			ssmClient := ssm.NewFromConfig(*_credential.awsConfig)
 
 			instanceID := args[0]
 			command := strings.Join(args[1:], " ")
 			skipCheck := viper.GetBool("exec-skip-check")
 
-			// Validate instance ID format
-			if !strings.HasPrefix(instanceID, "i-") {
-				panicRed(fmt.Errorf("invalid instance ID format: %s (should start with 'i-')", instanceID))
+			if err := internal.ValidateInstanceID(instanceID); err != nil {
+				return err
 			}
 
 			// Check if instance is SSM-connected (unless skipped)
 			if !skipCheck {
-				connectedInstances, err := internal.FindInstanceIdsWithConnectedSSM(ctx, *_credential.awsConfig)
+				connectedInstances, err := internal.FindInstanceIdsWithConnectedSSM(ctx, ssmClient)
 				if err != nil {
-					panicRed(err)
+					return err
 				}
 
 				found := false
@@ -54,7 +54,7 @@ Examples:
 					}
 				}
 				if !found {
-					panicRed(fmt.Errorf("instance %s is not connected to SSM.\nPossible causes:\n  - SSM agent is not running on the instance\n  - Instance lacks IAM permissions (AmazonSSMManagedInstanceCore)\n  - Network connectivity issues\n\nUse 'gossm list' to see available instances, or use --skip-check to bypass this validation", instanceID))
+					return fmt.Errorf("instance %s is not connected to SSM.\nPossible causes:\n  - SSM agent is not running on the instance\n  - Instance lacks IAM permissions (AmazonSSMManagedInstanceCore)\n  - Network connectivity issues\n\nUse 'gossm list' to see available instances, or use --skip-check to bypass this validation", instanceID)
 				}
 			}
 
@@ -63,9 +63,9 @@ Examples:
 
 			internal.PrintReady(command, _credential.awsConfig.Region, instanceID)
 
-			sendOutput, err := internal.SendCommand(ctx, *_credential.awsConfig, targets, command)
+			sendOutput, err := internal.SendCommand(ctx, ssmClient, targets, command)
 			if err != nil {
-				panicRed(err)
+				return err
 			}
 
 			fmt.Printf("%s\n", color.YellowString("Waiting for response..."))
@@ -76,7 +76,8 @@ Examples:
 				CommandId:  sendOutput.Command.CommandId,
 				InstanceId: aws.String(instanceID),
 			}
-			internal.PrintCommandInvocation(ctx, *_credential.awsConfig, []*ssm.GetCommandInvocationInput{input})
+			internal.PrintCommandInvocation(ctx, ssmClient, []*ssm.GetCommandInvocationInput{input})
+			return nil
 		},
 	}
 )

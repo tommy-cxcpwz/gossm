@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -20,43 +20,44 @@ var (
 		Use:   "start",
 		Short: "Exec `start-session` under AWS SSM with interactive CLI",
 		Long:  "Exec `start-session` under AWS SSM with interactive CLI",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			var (
 				target *internal.Target
 				err    error
 			)
 			ctx := context.Background()
+			ssmClient := ssm.NewFromConfig(*_credential.awsConfig)
+			ec2Client := ec2.NewFromConfig(*_credential.awsConfig)
 
 			// get target - if provided directly, skip the API lookup
 			argTarget := strings.TrimSpace(viper.GetString("start-session-target"))
 			if argTarget != "" {
-				// Validate instance ID format
-				if !strings.HasPrefix(argTarget, "i-") {
-					panicRed(fmt.Errorf("invalid instance ID format: %s (should start with 'i-')", argTarget))
+				if err := internal.ValidateInstanceID(argTarget); err != nil {
+					return err
 				}
 				target = &internal.Target{Name: argTarget}
 			} else {
-				target, err = internal.AskTarget(ctx, *_credential.awsConfig)
+				target, err = internal.AskTarget(ctx, ssmClient, ec2Client)
 				if err != nil {
-					panicRed(err)
+					return err
 				}
 			}
 			internal.PrintReady("start-session", _credential.awsConfig.Region, target.Name)
 
 			input := &ssm.StartSessionInput{Target: aws.String(target.Name)}
-			session, err := internal.CreateStartSession(ctx, *_credential.awsConfig, input)
+			session, err := internal.CreateStartSession(ctx, ssmClient, input)
 			if err != nil {
-				panicRed(err)
+				return err
 			}
 
 			sessJson, err := json.Marshal(session)
 			if err != nil {
-				panicRed(err)
+				return err
 			}
 
 			paramsJson, err := json.Marshal(input)
 			if err != nil {
-				panicRed(err)
+				return err
 			}
 
 			if err := internal.CallProcess(_credential.ssmPluginPath, string(sessJson),
@@ -65,11 +66,12 @@ var (
 				color.Red("%v", err)
 			}
 
-			if err := internal.DeleteStartSession(ctx, *_credential.awsConfig, &ssm.TerminateSessionInput{
+			if err := internal.DeleteStartSession(ctx, ssmClient, &ssm.TerminateSessionInput{
 				SessionId: session.SessionId,
 			}); err != nil {
-				panicRed(err)
+				return err
 			}
+			return nil
 		},
 	}
 )
