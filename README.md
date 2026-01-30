@@ -21,7 +21,7 @@
 - **Interactive instance selection** - Browse and select from available EC2 instances
 - **Start Session** - Connect to instances via SSM session manager
 - **List Instances** - View all SSM-connected instances in a table format
-- **Execute Commands** - Run commands on specific instances via SSM Run Command
+- **Execute Commands** - Run commands on one or more instances via SSM Run Command
 - **Embedded SSM Plugin** - No need to install session-manager-plugin separately
 
 ## Prerequisite
@@ -97,27 +97,31 @@ $ gossm start -t i-0abc123def456789
 List all available instances that can be connected via SSM.
 
 ```bash
+# List instances
 $ gossm list
+
+# List instances with tags
+$ gossm list --show-tags
 ```
 
-Output shows instance name, ID, private DNS, and public DNS in a table format.
+Output shows instance name, ID, private DNS, and public DNS in a table format. Use `--show-tags` to additionally display instance tags.
 
 #### exec
 
-Execute a command directly on a specific instance.
+Execute a command on one or more instances. Use `-t/--target` to specify instance IDs directly (repeatable), or omit to interactively select multiple instances.
 
 ```bash
-# Execute ls -la on a specific instance
-$ gossm exec i-0abc123def456789 ls -la
+# Execute on a specific instance
+$ gossm exec --target i-0abc123def456789 ls -la
 
-# Execute a command with quotes
-$ gossm exec i-0abc123def456789 "cat /etc/hosts"
+# Execute on multiple instances
+$ gossm exec --target i-0abc123 --target i-0def456 "cat /etc/hosts"
 
-# Check disk usage
-$ gossm exec i-0abc123def456789 df -h
+# Interactive multi-select (with "Select All" option)
+$ gossm exec df -h
 
 # Skip SSM connectivity check for faster execution
-$ gossm exec --skip-check i-0abc123def456789 uptime
+$ gossm exec --skip-check --target i-0abc123def456789 uptime
 ```
 
 ## Architecture

@@ -42,6 +42,8 @@ var (
 type (
 	Target struct {
 		Name          string
+		TagName       string
+		Tags          map[string]string
 		PublicDomain  string
 		PrivateDomain string
 		displayKey    string // internal use for display formatting
@@ -115,6 +117,52 @@ func AskTarget(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec2Cli
 	return table[selectKey], nil
 }
 
+// AskMultiTarget asks you to select multiple instances.
+func AskMultiTarget(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec2Client EC2DescribeInstancesAPI) ([]*Target, error) {
+	table, err := FindInstances(ctx, ssmClient, ec2Client)
+	if err != nil {
+		return nil, err
+	}
+
+	options := make([]string, 0, len(table))
+	for k := range table {
+		options = append(options, k)
+	}
+	sort.Strings(options)
+	if len(options) == 0 {
+		return nil, fmt.Errorf("not found ec2 instances")
+	}
+
+	prompt := &survey.MultiSelect{
+		Message: "Choose targets in AWS:",
+		Options: options,
+	}
+
+	var selectedKeys []string
+	if err := survey.AskOne(prompt, &selectedKeys, survey.WithPageSize(20)); err != nil {
+		return nil, err
+	}
+
+	if len(selectedKeys) == 0 {
+		return nil, fmt.Errorf("no targets selected")
+	}
+
+	targets := make([]*Target, 0, len(selectedKeys))
+	for _, key := range selectedKeys {
+		targets = append(targets, table[key])
+	}
+	return targets, nil
+}
+
+// PrintReadyMulti prints region and multiple target IDs.
+func PrintReadyMulti(cmd, region string, targets []*Target) {
+	ids := make([]string, 0, len(targets))
+	for _, t := range targets {
+		ids = append(ids, t.Name)
+	}
+	fmt.Printf("[%s] region: %s, targets: %s\n", color.GreenString(cmd), color.YellowString(region), color.YellowString(strings.Join(ids, ", ")))
+}
+
 // FindInstances returns all of instances-map with running state.
 func FindInstances(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec2Client EC2DescribeInstancesAPI) (map[string]*Target, error) {
 	timer := StartTimer("FindInstances")
@@ -175,8 +223,11 @@ func FindInstances(ctx context.Context, ssmClient SSMDescribeInstanceInfoAPI, ec
 				for _, inst := range rv.Instances {
 					instanceID := aws.ToString(inst.InstanceId)
 					name := getInstanceName(inst.Tags)
+					tags := getInstanceTags(inst.Tags)
 					ec2Instances[instanceID] = &Target{
 						Name:          instanceID,
+						TagName:       name,
+						Tags:          tags,
 						PublicDomain:  aws.ToString(inst.PublicDnsName),
 						PrivateDomain: aws.ToString(inst.PrivateDnsName),
 						displayKey:    fmt.Sprintf("%s\t(%s)", name, instanceID),
@@ -223,6 +274,43 @@ func getInstanceName(tags []ec2_types.Tag) string {
 		}
 	}
 	return ""
+}
+
+// getInstanceTags extracts all tags (excluding Name) from EC2 instance tags.
+func getInstanceTags(tags []ec2_types.Tag) map[string]string {
+	result := make(map[string]string)
+	for _, tag := range tags {
+		key := aws.ToString(tag.Key)
+		if key == "Name" {
+			continue
+		}
+		result[key] = aws.ToString(tag.Value)
+	}
+	return result
+}
+
+// FormatTags formats a tag map as indented JSON-like block sorted by key.
+func FormatTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteString("{\n")
+	for i, k := range keys {
+		b.WriteString(fmt.Sprintf("    %s = %q", k, tags[k]))
+		if i < len(keys)-1 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteByte('}')
+	return b.String()
 }
 
 // FindInstanceIdsWithConnectedSSM asks you which selects instances.
@@ -312,18 +400,28 @@ func SendCommand(ctx context.Context, client SSMCommandAPI, targets []*Target, c
 }
 
 // PrintCommandInvocation watches command invocations.
-func PrintCommandInvocation(ctx context.Context, client SSMCommandAPI, inputs []*ssm.GetCommandInvocationInput) {
+// nameMap maps instance IDs to their display names (may be nil).
+func PrintCommandInvocation(ctx context.Context, client SSMCommandAPI, inputs []*ssm.GetCommandInvocationInput, nameMap map[string]string) {
 
 	wg := new(sync.WaitGroup)
 	for _, input := range inputs {
 		wg.Add(1)
 		go func(input *ssm.GetCommandInvocationInput) {
 			defer wg.Done()
+			instanceID := aws.ToString(input.InstanceId)
+			tagName := "-"
+			if nameMap != nil {
+				if v := nameMap[instanceID]; v != "" {
+					tagName = v
+				}
+			}
+			header := fmt.Sprintf("[%%s][%s][%s]", color.YellowString(instanceID), color.CyanString(tagName))
+
 			for {
 				// Check for context cancellation to prevent goroutine leak
 				select {
 				case <-ctx.Done():
-					color.Yellow("[canceled] %s", aws.ToString(input.InstanceId))
+					color.Yellow("[canceled] %s", instanceID)
 					return
 				default:
 				}
@@ -343,7 +441,7 @@ func PrintCommandInvocation(ctx context.Context, client SSMCommandAPI, inputs []
 					if stdout == "" {
 						stdout = "(no output)"
 					}
-					fmt.Printf("[%s][%s]\n%s\n", color.GreenString("success"), color.YellowString(aws.ToString(output.InstanceId)), stdout)
+					fmt.Printf(header+"\n%s\n", color.GreenString("success"), stdout)
 					return
 				default:
 					// Show both stdout and stderr for failed commands
@@ -351,7 +449,7 @@ func PrintCommandInvocation(ctx context.Context, client SSMCommandAPI, inputs []
 					stderr := aws.ToString(output.StandardErrorContent)
 					statusDetail := aws.ToString(output.StatusDetails)
 
-					fmt.Printf("[%s][%s] status: %s\n", color.RedString("failed"), color.YellowString(aws.ToString(output.InstanceId)), color.RedString(statusDetail))
+					fmt.Printf(header+" status: %s\n", color.RedString("failed"), color.RedString(statusDetail))
 					if stdout != "" {
 						fmt.Printf("stdout: %s\n", stdout)
 					}

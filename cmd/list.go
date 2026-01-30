@@ -24,6 +24,7 @@ var (
 			ctx := context.Background()
 			ssmClient := ssm.NewFromConfig(*_credential.awsConfig)
 			ec2Client := ec2.NewFromConfig(*_credential.awsConfig)
+			showTags, _ := cmd.Flags().GetBool("show-tags")
 
 			table, err := internal.FindInstances(ctx, ssmClient, ec2Client)
 			if err != nil {
@@ -42,32 +43,32 @@ var (
 			}
 			sort.Strings(keys)
 
-			// Print header
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, color.CyanString("NAME\tINSTANCE ID\tPRIVATE DNS\tPUBLIC DNS"))
-			fmt.Fprintln(w, color.CyanString("----\t-----------\t-----------\t----------"))
+			if showTags {
+				// Print header
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, color.CyanString("NAME\tINSTANCE ID\tPRIVATE DNS\tPUBLIC DNS\tTAGS"))
+				fmt.Fprintln(w, color.CyanString("----\t-----------\t-----------\t----------\t----"))
+				w.Flush()
 
-			// Print instances
-			for _, k := range keys {
-				t := table[k]
-				// Extract name from key (format: "name\t(instance-id)")
-				name := ""
-				if idx := len(k) - len(t.Name) - 3; idx > 0 {
-					name = k[:idx]
-				}
+				for _, k := range keys {
+					t := table[k]
+					name, privateDNS, publicDNS := formatFields(t)
 
-				publicDNS := t.PublicDomain
-				if publicDNS == "" {
-					publicDNS = "-"
+					fmt.Printf("%s  %s  %s  %s\n", name, t.Name, privateDNS, publicDNS)
+					fmt.Printf("%s\n\n", internal.FormatTags(t.Tags))
 				}
-				privateDNS := t.PrivateDomain
-				if privateDNS == "" {
-					privateDNS = "-"
-				}
+			} else {
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, color.CyanString("NAME\tINSTANCE ID\tPRIVATE DNS\tPUBLIC DNS"))
+				fmt.Fprintln(w, color.CyanString("----\t-----------\t-----------\t----------"))
 
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, t.Name, privateDNS, publicDNS)
+				for _, k := range keys {
+					t := table[k]
+					name, privateDNS, publicDNS := formatFields(t)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, t.Name, privateDNS, publicDNS)
+				}
+				w.Flush()
 			}
-			w.Flush()
 
 			fmt.Printf("\n%s %d instance(s) found\n", color.GreenString("[OK]"), len(table))
 			return nil
@@ -75,6 +76,23 @@ var (
 	}
 )
 
+func formatFields(t *internal.Target) (name, privateDNS, publicDNS string) {
+	name = t.TagName
+	if name == "" {
+		name = "-"
+	}
+	privateDNS = t.PrivateDomain
+	if privateDNS == "" {
+		privateDNS = "-"
+	}
+	publicDNS = t.PublicDomain
+	if publicDNS == "" {
+		publicDNS = "-"
+	}
+	return
+}
+
 func init() {
+	listCommand.Flags().Bool("show-tags", false, "display instance tags")
 	rootCmd.AddCommand(listCommand)
 }

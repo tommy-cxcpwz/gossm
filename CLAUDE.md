@@ -46,12 +46,14 @@ golangci-lint run --fix ./...
 - Validates instance ID format before connecting
 
 **cmd/exec.go** - Execute command:
-- Executes commands on specific instances via SSM Run Command
-- Validates instance ID and SSM connectivity before execution
+- Executes commands on one or more instances via SSM Run Command
+- Supports `-t/--target` flag (repeatable) or interactive multi-select with "Select All"
+- Validates instance IDs and SSM connectivity before execution
 
 **cmd/list.go** - List command:
 - Lists all EC2 instances with SSM agent connected
 - Displays in table format with name, ID, and DNS information
+- Supports `--show-tags` flag to display instance tags in JSON format
 
 **internal/ssm.go** - AWS SSM and EC2 operations:
 - `FindInstances()` - Discovers EC2 instances with SSM agent connected (runs SSM and EC2 API calls in parallel for performance)
